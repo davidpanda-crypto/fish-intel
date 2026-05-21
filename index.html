@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' https: data: blob:; img-src * data: blob:; connect-src *;">
 <meta name="referrer" content="no-referrer">
-<title>Fish Farm Intelligence Bot</title>
+<title>AquaIntel — Fish Farm &amp; Vessel Intelligence</title>
 
 <!-- DOMPurify: loaded eagerly — used on every scrape to sanitize HTML -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"
@@ -91,8 +91,7 @@
 <header class="site-hdr" role="banner">
   <div class="site-hdr-inner">
     <div class="hdr-brand">
-      <div class="hdr-title">Fish Farm &amp; Ship Intelligence</div>
-      <div class="hdr-sub">Research fish farms, mills &amp; vessels — locations, species, certifications, maritime records, and more</div>
+      <div class="hdr-title">AquaIntel</div>
     </div>
     <div class="hdr-stats" aria-label="Session statistics">
       <div class="hs"><span class="hs-v" id="s-searches">0</span><div class="hs-l">Searches</div></div>
@@ -280,6 +279,20 @@
     </div>
 
   </div><!-- /tool-panel -->
+
+  <!-- ═══ EMPTY STATE ═══ -->
+  <div id="empty-state" class="empty-state">
+    <div class="empty-state-icon">🐟</div>
+    <div class="empty-state-title">Search any farm, mill, or vessel</div>
+    <div class="empty-state-sub">Enter a name or 7-digit IMO number above — the bot finds locations,<br>species, certifications, capacity, and maritime records automatically.</div>
+    <div class="empty-examples">
+      <button class="empty-ex" onclick="fillSearch('Mowi ASA')">Mowi ASA</button>
+      <button class="empty-ex" onclick="fillSearch('Cermaq Norway')">Cermaq Norway</button>
+      <button class="empty-ex" onclick="fillSearch('Leroy Seafood')">Leroy Seafood</button>
+      <button class="empty-ex" onclick="fillSearch('Atlantic Dawn')">Atlantic Dawn</button>
+      <button class="empty-ex" onclick="fillSearch('9123456')">IMO 9123456</button>
+    </div>
+  </div>
 
   <!-- ═══ RESULTS ═══ -->
   <div id="bot-output"></div>
