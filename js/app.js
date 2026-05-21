@@ -45,7 +45,7 @@ function cleanField(v) {
     .replace(/[\x00-\x1f\x7f]/g, '')// strip control chars
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 300);
+    .slice(0, 1500);
   // Reject placeholder / noise values
   if (/^(n\/?a|none|not\s+available|unknown|undefined|null|—|–|-|\.{2,}|tbd|n\/a|na|yes|no|true|false)$/i.test(s)) return '';
   // Reject single characters
@@ -97,7 +97,36 @@ function validateFieldValue(key, val) {
     }
     case 'description': {
       // Must be at least 30 chars to be meaningful
-      return v.length >= 30 ? v.slice(0, 500) : '';
+      return v.length >= 30 ? v.slice(0, 1200) : '';
+    }
+    case 'ownership': case 'parent_company': {
+      if (/^(unknown|n\/a|none|private|public)$/i.test(v.trim())) return '';
+      return v.slice(0, 150);
+    }
+    case 'founded': case 'established_year': {
+      const m = v.match(/\b(1[89]\d{2}|20[0-2]\d)\b/);
+      return m ? m[1] : '';
+    }
+    case 'headquarters': {
+      return v.slice(0, 120);
+    }
+    case 'annual_production': {
+      return /\d/.test(v) ? v.slice(0, 100) : '';
+    }
+    case 'violations': {
+      return v.length >= 10 ? v.slice(0, 600) : '';
+    }
+    case 'export_markets': {
+      return v.slice(0, 200);
+    }
+    case 'key_contacts': {
+      return v.slice(0, 200);
+    }
+    case 'environmental_record': {
+      return v.length >= 10 ? v.slice(0, 500) : '';
+    }
+    case 'supply_chain': {
+      return v.slice(0, 200);
     }
     case 'species': case 'input_species': {
       // Reject UI / nav boilerplate that leaks through scraping
@@ -245,9 +274,9 @@ function normalizeFields(merged) {
   if (merged.country) merged.country = merged.country.replace(/\b\w/g, c => c.toUpperCase()).slice(0, 60);
   if (!merged.country && merged.flag) merged.country = merged.flag;
 
-  // ── Description: trim to ≤300 chars at a sentence boundary
-  if (merged.description && merged.description.length > 300) {
-    const cut = merged.description.slice(0, 300).replace(/\s+\S+$/, '');
+  // ── Description: trim to ≤1000 chars at a sentence boundary
+  if (merged.description && merged.description.length > 1000) {
+    const cut = merged.description.slice(0, 1000).replace(/\s+\S+$/, '');
     merged.description = cut + (cut.length < merged.description.length ? '…' : '');
   }
 
@@ -673,6 +702,18 @@ async function callClaude(system, user, maxTokens = 800) {
 
 // ── Field schema by type ───────────────────────────────────────────────────
 function claudeFieldSchema(searchType) {
+  // Investigative fields shared by all entity types
+  const investigative = {
+    ownership:            'Parent company or ultimate beneficial owner (e.g. "Subsidiary of Cermaq Group AS, owned by Mitsubishi Corp")',
+    founded:              '4-digit year the company or facility was established',
+    headquarters:         'City and country where the parent company is headquartered',
+    annual_production:    'Stated annual production or processing volume with units (e.g. "22,000 t/yr")',
+    export_markets:       'Key export destinations or customer markets, comma-separated',
+    key_contacts:         'Named executives, CEO, or key managers if mentioned',
+    violations:           'Any regulatory violations, fines, environmental incidents, license suspensions, or controversies found in the text',
+    environmental_record: 'Environmental compliance record, ESG notes, pollution incidents, or sustainability programme details',
+    supply_chain:         'Key upstream suppliers (feed, fingerlings) or downstream buyers / customers if named',
+  };
   const base = {
     name:        'Full facility name',
     operator:    'Operating company or owner',
@@ -680,7 +721,7 @@ function claudeFieldSchema(searchType) {
     location:    'City, region or address',
     latitude:    'Decimal degrees (number)',
     longitude:   'Decimal degrees (number)',
-    description: '1–2 sentence factual summary, max 200 chars',
+    description: 'Write an investigative-grade paragraph (200–600 words) as if you are a journalist. Cover: what the entity does, where it operates, its scale and capacity, ownership structure, certifications, notable incidents or controversies, and any financial or environmental context found in the text. Only use facts explicitly stated in the provided content — never infer or hallucinate.',
   };
   if (searchType === 'vessel') return {
     vessel_name: 'Full vessel name', imo: '7-digit IMO number',
@@ -691,7 +732,9 @@ function claudeFieldSchema(searchType) {
     built_year:  '4-digit year', engine: 'Engine type / kW',
     speed:       'Service speed in knots', port_of_registry: 'Home port',
     owner:       'Registered owner', operator: 'Commercial operator',
-    mmsi:        '9-digit MMSI', description: '1–2 sentences, max 200 chars',
+    mmsi:        '9-digit MMSI',
+    description: 'Investigative summary paragraph covering vessel history, ownership chain, flag changes, trading routes, any detentions or port-state control findings, and notable incidents. Facts only.',
+    ...investigative,
   };
   if (searchType === 'mill') return {
     ...base,
@@ -699,6 +742,7 @@ function claudeFieldSchema(searchType) {
     products:            'Output products e.g. fishmeal, fish oil',
     processing_capacity: 'Annual throughput with units e.g. 50,000 t/yr',
     certification:       'Certifications held',
+    ...investigative,
   };
   return { // farm / general
     ...base,
@@ -711,7 +755,8 @@ function claudeFieldSchema(searchType) {
     stocking_density:    'Stocking density with units',
     fcr:                 'Feed Conversion Ratio (number)',
     harvest_cycle:       'Duration e.g. 24 months',
-    established_year:    '4-digit year',
+    established_year:    '4-digit year the facility was established',
+    ...investigative,
   };
 }
 
@@ -731,14 +776,14 @@ async function claudeExtract(pageTexts, query, searchType) {
   ].join('\n');
 
   const corpus = pageTexts
-    .slice(0, 4)
-    .map((p, i) => `=== Source ${i + 1} (${p.source}) ===\n${p.text.slice(0, 3500)}`)
+    .slice(0, 5)
+    .map((p, i) => `=== Source ${i + 1} (${p.source}) ===\n${p.text.slice(0, 4000)}`)
     .join('\n\n');
 
   const user = `Entity: "${query}" | Type: ${searchType}\n\nFields to extract (use exact key names):\n${JSON.stringify(schema, null, 2)}\n\nContent:\n${corpus}`;
 
   try {
-    const raw = await callClaude(system, user, 900);
+    const raw = await callClaude(system, user, 2000);
     if (!raw) return {};
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) return {};
@@ -756,22 +801,29 @@ async function claudeExtract(pageTexts, query, searchType) {
   }
 }
 
-// ── Smart description: final polish pass ────────────────────────────────────
+// ── Smart description: investigative journalist polish pass ──────────────────
 async function claudePolishDescription(merged, query, searchType) {
   const fields = Object.entries(merged)
-    .filter(([k, v]) => !k.startsWith('_') && v)
+    .filter(([k, v]) => !k.startsWith('_') && v && k !== 'description')
     .map(([k, v]) => `${k}: ${v}`)
     .join('\n');
 
-  const system = `You write concise, factual 1–2 sentence descriptions for aquaculture/maritime entities.
-Write in plain English. No fluff. No marketing language. Only facts from the provided data.
-Return ONLY the description string — no JSON, no quotes, no label.`;
+  const existingDesc = merged.description || '';
 
-  const user = `Entity: "${query}" (${searchType})\nData:\n${fields}`;
+  const system = `You are an investigative journalist writing for a seafood industry intelligence platform.
+Write a thorough, factual profile paragraph about the entity using ONLY the data provided — never invent facts.
+The paragraph should cover: what the entity is and does, its location and scale, ownership and parent company if known,
+certifications and compliance record, any notable incidents or violations, export markets, and any other significant facts.
+Write in plain, direct English. No marketing language. No fluff. Active voice preferred.
+If the provided data is sparse, write a shorter accurate paragraph rather than padding with guesses.
+Return ONLY the description paragraph — no JSON, no quotes, no label, no heading.`;
+
+  const user = `Entity: "${query}" (${searchType})
+${existingDesc ? `Existing description to improve:\n${existingDesc}\n\n` : ''}Structured data:\n${fields || '(none)'}`;
 
   try {
-    const desc = await callClaude(system, user, 120);
-    return desc?.trim().slice(0, 280) || null;
+    const desc = await callClaude(system, user, 600);
+    return desc?.trim().slice(0, 1000) || null;
   } catch { return null; }
 }
 
@@ -1183,6 +1235,34 @@ async function fetchWikipediaImages(query, signal) {
   return imgs.slice(0, 4);
 }
 
+/**
+ * Fetch the full article extract from Wikipedia's REST summary API.
+ * Returns { title, text } or null. No proxy needed.
+ */
+async function fetchWikipediaText(query, signal) {
+  try {
+    const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srlimit=1&format=json&origin=*`;
+    const searchRes = await fetch(searchUrl, { signal: timedSignal(signal, 6000) });
+    if (!searchRes.ok) return null;
+    const searchData = await searchRes.json();
+    const title = searchData?.query?.search?.[0]?.title;
+    if (!title) return null;
+
+    // REST summary endpoint returns the full introductory extract
+    const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+    const summaryRes = await fetch(summaryUrl, { signal: timedSignal(signal, 6000) });
+    if (!summaryRes.ok) return null;
+    const summary = await summaryRes.json();
+
+    const extract = summary.extract || '';
+    if (extract.length < 50) return null;
+    return { title: summary.title || title, text: extract, source: 'Wikipedia' };
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    return null;
+  }
+}
+
 /* ═══════════════════════════════════════════
    FIELD EXTRACTION (all values sanitized)
 ═══════════════════════════════════════════ */
@@ -1191,7 +1271,7 @@ function extractFields(doc, text) {
 
   // Meta tags — description, keywords, og:title
   const metaDesc = doc.querySelector('meta[name="description"],meta[property="og:description"]');
-  if (metaDesc?.content) { const d = cleanField(metaDesc.content); if (d.length >= 30) f.description = d.slice(0, 400); }
+  if (metaDesc?.content) { const d = cleanField(metaDesc.content); if (d.length >= 30) f.description = d.slice(0, 1200); }
   const ogt = doc.querySelector('meta[property="og:title"]');
   if (ogt?.content) f._ogtitle = cleanField(ogt.content);
   const metaKW = doc.querySelector('meta[name="keywords"]');
@@ -1236,7 +1316,7 @@ function extractFields(doc, text) {
       items.forEach(d => {
         if (!d || typeof d !== 'object') return;
         if (d.name && !f.vessel_name) f.vessel_name = cleanField(d.name);
-        if (d.description && !f.description) f.description = cleanField(d.description).slice(0,200);
+        if (d.description && !f.description) f.description = cleanField(d.description).slice(0,1200);
         if (d.geo && typeof d.geo === 'object') {
           if (d.geo.latitude  && !f.latitude)  f.latitude  = String(d.geo.latitude);
           if (d.geo.longitude && !f.longitude) f.longitude = String(d.geo.longitude);
@@ -1408,6 +1488,18 @@ function extractFields(doc, text) {
     [/[Oo]utput\s*[Pp]roducts?[:\s]+([A-Za-z ,()]{3,80})/,                           'output_products'],
     [/[Ff]ish\s*[Mm]eal\s*(?:%|percentage|content)?[:\s]+([\d.]+\s*%?)/i,            'fishmeal_pct'],
     [/[Ff]ish\s*[Oo]il\s*(?:%|percentage|content)?[:\s]+([\d.]+\s*%?)/i,             'fishoil_pct'],
+    // Investigative intelligence
+    [/[Pp]arent\s*[Cc]ompan(?:y|ies)[:\s]+([A-Za-z0-9 &,.\-]{3,100})/,              'ownership'],
+    [/[Oo]wned\s*by[:\s]+([A-Za-z0-9 &,.\-]{3,100})/,                               'ownership'],
+    [/[Ss]ubsidiar(?:y|ies)\s*of[:\s]+([A-Za-z0-9 &,.\-]{3,100})/,                  'ownership'],
+    [/[Ee]stablished[:\s]+(\d{4})/,                                                   'founded'],
+    [/[Ff]ounded[:\s]+(?:in\s*)?(\d{4})/,                                             'founded'],
+    [/[Hh]eadquartered\s*in[:\s]+([A-Za-z ,]{3,80})/,                                'headquarters'],
+    [/[Hh][Qq][:\s]+([A-Za-z ,]{3,80})/,                                             'headquarters'],
+    [/[Aa]nnual\s*(?:harvest|output|revenue|turnover|sales)[:\s]+([\d,.]+\s*(?:t(?:on(?:nes?)?)?|MT|NOK|USD|EUR|GBP|billion|million)?[^.]{0,30})/i, 'annual_production'],
+    [/[Ee]xport\s*(?:market|destination)[s]?[:\s]+([A-Za-z ,;]{3,150})/i,            'export_markets'],
+    [/[Cc][Ee][Oo][:\s]+([A-Za-z .]{3,60})/,                                         'key_contacts'],
+    [/[Mm]anaging\s*[Dd]irector[:\s]+([A-Za-z .]{3,60})/,                            'key_contacts'],
   ];
   pairs.forEach(([re, key]) => {
     if (key === '_coords') {
@@ -1446,7 +1538,9 @@ function extractFields(doc, text) {
 function assignField(f, k, v) {
   if (!v) return;
   v = cleanField(v);
-  if (!v || v.length > 200) return;
+  // Allow longer values for prose fields; reject oversized values for structured fields
+  const isProseField = /description|violations|environmental|supply_chain|key_contacts/.test(k);
+  if (!v || v.length > (isProseField ? 1200 : 200)) return;
   // ── Maritime / vessel fields (EN + multilingual) ──
   // Flag/country: bandera(ES), pavillon(FR), flagge(DE), flagg(NO), bandeira(PT), 旗(ZH)
   if (/flag|country.*reg|bandera|pavillon|flagge|flagg|bandeira/.test(k))
@@ -1570,6 +1664,34 @@ function assignField(f, k, v) {
   // Employees: empleados(ES), employés(FR), ansatte(NO), funcionários(PT)
   else if (/employee|ansatte|empleados|employ.s|funcion.rios|staff|workforce/.test(k))
                                                  f.employees        = f.employees        || v;
+  // ── Investigative intelligence fields ──
+  // Ownership / parent company
+  else if (/parent.?compan|owned.?by|subsidiar|ultimate.?owner|beneficial.?owner/.test(k))
+                                                 f.ownership        = f.ownership        || v;
+  // Founded / established year
+  else if (/\bfounded\b|established|incorporated|start(?:ed)?/.test(k) && /\d{4}/.test(v))
+                                                 f.founded          = f.founded          || v;
+  // Headquarters
+  else if (/headquarter|registered.?address|head.?office|main.?office/.test(k))
+                                                 f.headquarters     = f.headquarters     || v;
+  // Annual production / revenue
+  else if (/annual.?(?:prod|harvest|output|revenue|sales|turnover)|yearly.?prod/.test(k))
+                                                 f.annual_production= f.annual_production|| v;
+  // Violations / incidents
+  else if (/violation|incident|fine\b|sanction|penalty|infringement|complaint/.test(k))
+                                                 f.violations       = f.violations       || v;
+  // Export markets
+  else if (/export.?market|export.?dest|key.?market|sales.?market/.test(k))
+                                                 f.export_markets   = f.export_markets   || v;
+  // Key contacts / executives
+  else if (/\bceo\b|chief.?exec|managing.?director|president|chairman|contact.?person/.test(k))
+                                                 f.key_contacts     = f.key_contacts     || v;
+  // Environmental record
+  else if (/environmental|esg|sustainability|carbon|emissions|ecological|impact/.test(k))
+                                                 f.environmental_record = f.environmental_record || v;
+  // Supply chain
+  else if (/supplier|feed.?supplier|buyer|customer|purchaser|offtaker/.test(k))
+                                                 f.supply_chain     = f.supply_chain     || v;
 }
 
 // Source trust order — higher index = more trusted when merging fields
@@ -1605,6 +1727,9 @@ function mergeFields(results, query) {
     'processing_capacity','input_species','output_products','fishmeal_pct','fishoil_pct',
     'vessel_type','call_sign','gross_tonnage','dwt','year_built','mmsi','port_of_registry',
     'length','beam','nav_status','class_soc','_imo',
+    // Investigative intelligence fields
+    'ownership','founded','established_year','headquarters','annual_production',
+    'violations','export_markets','key_contacts','environmental_record','supply_chain',
   ];
 
   for (const k of keys) {
@@ -2091,6 +2216,15 @@ async function runBot() {
     let   claudePromise = null;         // resolves to {} if no key or on error
     const claudeKey     = await getClaudeKey();
 
+    // Pre-seed claudeTexts with API results (Wikipedia, OSM) — they're already in scrapeResults
+    if (claudeKey) {
+      for (const r of farmAPIResults) {
+        if (r.ok && r.text && r.text.length > 100) {
+          claudeTexts.push({ source: r.id, text: r.text });
+        }
+      }
+    }
+
     // ── Early-exit: cancel remaining scrapers once we have enough unique fields ──
     const exitAC = new AbortController();
     const scrapeSignal = typeof AbortSignal.any === 'function'
@@ -2476,7 +2610,7 @@ async function queryFarmAPIs(q, signal, yearTo = 2020) {
       const s = await summResp.json();
       const fields = {};
       if (s.title)                      fields.farm_name   = cleanField(s.title);
-      if (s.extract)                    fields.description = clipToYear(cleanField(s.extract), yearTo).slice(0, 400);
+      if (s.extract)                    fields.description = clipToYear(cleanField(s.extract), yearTo).slice(0, 1200);
       if (s.coordinates?.lat != null)   fields.latitude    = String(s.coordinates.lat);
       if (s.coordinates?.lon != null)   fields.longitude   = String(s.coordinates.lon);
       const imgs = (s.thumbnail?.source && isValidURL(s.thumbnail.source))
@@ -2943,8 +3077,21 @@ function showSavePreview(info, btnId) {
       { key:'manager',          label:'Manager',              val: info.manager || '' },
       { key:'nav_status',       label:'Nav Status',           val: info.nav_status || '' },
     ]},
+    { label: 'Business Intelligence', showFor: 'all', fields: [
+      { key:'ownership',            label:'Parent Company / Ownership',   val: info.ownership || info.parent_company || '' },
+      { key:'founded',              label:'Founded / Established',        val: info.founded || info.established_year || '' },
+      { key:'headquarters',         label:'Headquarters',                 val: info.headquarters || '' },
+      { key:'annual_production',    label:'Annual Production / Revenue',  val: info.annual_production || '' },
+      { key:'export_markets',       label:'Export Markets',               val: info.export_markets || '' },
+      { key:'key_contacts',         label:'Key Contacts / CEO',           val: info.key_contacts || '' },
+    ]},
+    { label: 'Compliance & Environment', showFor: 'all', full: true, fields: [
+      { key:'violations',           label:'Violations / Incidents',       val: info.violations || '', type:'textarea' },
+      { key:'environmental_record', label:'Environmental Record / ESG',   val: info.environmental_record || '', type:'textarea' },
+      { key:'supply_chain',         label:'Supply Chain (suppliers/buyers)', val: info.supply_chain || '', type:'textarea' },
+    ]},
     { label: 'Notes & Description', showFor: 'all', full: true, fields: [
-      { key:'description', label:'Description', val: info.description || '', type:'textarea' },
+      { key:'description', label:'Description', val: info.description || '', type:'textarea', rows: 8 },
       { key:'_notes',      label:'Personal Notes (private)', val: info._notes || '', type:'textarea' },
     ]},
   ];
@@ -2967,7 +3114,7 @@ function showSavePreview(info, btnId) {
         if (f.type === 'textarea') return `
           <div class="${cls} sp-full">
             <label class="sp-label">${esc(f.label)}</label>
-            <textarea class="sp-input" data-key="${esc(f.key)}" rows="3">${esc(f.val)}</textarea>
+            <textarea class="sp-input" data-key="${esc(f.key)}" rows="${f.rows || 3}">${esc(f.val)}</textarea>
           </div>`;
         return `
           <div class="${cls}">
@@ -2983,9 +3130,9 @@ function showSavePreview(info, btnId) {
   // Auto-enrich: fill empty fields by running a background search if key data is missing
   const name = info.farm_name || info.vessel_name || info.name || '';
   const facilityType = defType;
-  const FARM_KEY_FIELDS   = ['species','country','capacity','production_method','operator'];
-  const VESSEL_KEY_FIELDS = ['vessel_type','flag','gross_tonnage','year_built','operator'];
-  const MILL_KEY_FIELDS   = ['processing_capacity','input_species','output_products','country'];
+  const FARM_KEY_FIELDS   = ['species','country','capacity','production_method','operator','ownership','founded'];
+  const VESSEL_KEY_FIELDS = ['vessel_type','flag','gross_tonnage','year_built','operator','ownership'];
+  const MILL_KEY_FIELDS   = ['processing_capacity','input_species','output_products','country','ownership'];
   const keyFields = facilityType === 'vessel' ? VESSEL_KEY_FIELDS
                   : facilityType === 'mill'   ? MILL_KEY_FIELDS
                   : FARM_KEY_FIELDS;
