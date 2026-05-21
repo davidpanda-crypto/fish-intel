@@ -99,26 +99,6 @@ function validateFieldValue(key, val) {
       // Must be at least 30 chars to be meaningful
       return v.length >= 30 ? v.slice(0, 1200) : '';
     }
-    case 'ownership': case 'parent_company': {
-      if (/^(unknown|n\/a|none|private|public)$/i.test(v.trim())) return '';
-      return v.slice(0, 150);
-    }
-    case 'founded': case 'established_year': {
-      const m = v.match(/\b(1[89]\d{2}|20[0-2]\d)\b/);
-      return m ? m[1] : '';
-    }
-    case 'headquarters': {
-      return v.slice(0, 120);
-    }
-    case 'annual_production': {
-      return /\d/.test(v) ? v.slice(0, 100) : '';
-    }
-    case 'export_markets': {
-      return v.slice(0, 200);
-    }
-    case 'key_contacts': {
-      return v.slice(0, 200);
-    }
     case 'species': case 'input_species': {
       // Reject UI / nav boilerplate that leaks through scraping
       if (/outside\s*fish\s*in|inside\s*fish|view\s*all|see\s*more|learn\s*more|read\s*more|shop\s*now|click\s*here/i.test(v)) return '';
@@ -693,15 +673,6 @@ async function callClaude(system, user, maxTokens = 800) {
 
 // ── Field schema by type ───────────────────────────────────────────────────
 function claudeFieldSchema(searchType) {
-  // Investigative fields shared by all entity types
-  const investigative = {
-    ownership:            'Parent company or ultimate beneficial owner (e.g. "Subsidiary of Cermaq Group AS, owned by Mitsubishi Corp")',
-    founded:              '4-digit year the company or facility was established',
-    headquarters:         'City and country where the parent company is headquartered',
-    annual_production:    'Stated annual production or processing volume with units (e.g. "22,000 t/yr")',
-    export_markets:       'Key export destinations or customer markets, comma-separated',
-    key_contacts:         'Named executives, CEO, or key managers if mentioned',
-  };
   const base = {
     name:        'Full facility name',
     operator:    'Operating company or owner',
@@ -722,7 +693,6 @@ function claudeFieldSchema(searchType) {
     owner:       'Registered owner', operator: 'Commercial operator',
     mmsi:        '9-digit MMSI',
     description: 'Investigative summary paragraph covering vessel history, ownership chain, flag changes, trading routes, any detentions or port-state control findings, and notable incidents. Facts only.',
-    ...investigative,
   };
   if (searchType === 'mill') return {
     ...base,
@@ -730,7 +700,6 @@ function claudeFieldSchema(searchType) {
     products:            'Output products e.g. fishmeal, fish oil',
     processing_capacity: 'Annual throughput with units e.g. 50,000 t/yr',
     certification:       'Certifications held',
-    ...investigative,
   };
   return { // farm / general
     ...base,
@@ -744,7 +713,6 @@ function claudeFieldSchema(searchType) {
     fcr:                 'Feed Conversion Ratio (number)',
     harvest_cycle:       'Duration e.g. 24 months',
     established_year:    '4-digit year the facility was established',
-    ...investigative,
   };
 }
 
@@ -800,8 +768,7 @@ async function claudePolishDescription(merged, query, searchType) {
 
   const system = `You are an investigative journalist writing for a seafood industry intelligence platform.
 Write a thorough, factual profile paragraph about the entity using ONLY the data provided — never invent facts.
-The paragraph should cover: what the entity is and does, its location and scale, ownership and parent company if known,
-certifications and compliance record, any notable incidents or violations, export markets, and any other significant facts.
+Cover: what the entity is and does, its location and scale, species or vessel type, production method, capacity, certifications, and any other significant facts present in the data.
 Write in plain, direct English. No marketing language. No fluff. Active voice preferred.
 If the provided data is sparse, write a shorter accurate paragraph rather than padding with guesses.
 Return ONLY the description paragraph — no JSON, no quotes, no label, no heading.`;
@@ -1476,18 +1443,6 @@ function extractFields(doc, text) {
     [/[Oo]utput\s*[Pp]roducts?[:\s]+([A-Za-z ,()]{3,80})/,                           'output_products'],
     [/[Ff]ish\s*[Mm]eal\s*(?:%|percentage|content)?[:\s]+([\d.]+\s*%?)/i,            'fishmeal_pct'],
     [/[Ff]ish\s*[Oo]il\s*(?:%|percentage|content)?[:\s]+([\d.]+\s*%?)/i,             'fishoil_pct'],
-    // Investigative intelligence
-    [/[Pp]arent\s*[Cc]ompan(?:y|ies)[:\s]+([A-Za-z0-9 &,.\-]{3,100})/,              'ownership'],
-    [/[Oo]wned\s*by[:\s]+([A-Za-z0-9 &,.\-]{3,100})/,                               'ownership'],
-    [/[Ss]ubsidiar(?:y|ies)\s*of[:\s]+([A-Za-z0-9 &,.\-]{3,100})/,                  'ownership'],
-    [/[Ee]stablished[:\s]+(\d{4})/,                                                   'founded'],
-    [/[Ff]ounded[:\s]+(?:in\s*)?(\d{4})/,                                             'founded'],
-    [/[Hh]eadquartered\s*in[:\s]+([A-Za-z ,]{3,80})/,                                'headquarters'],
-    [/[Hh][Qq][:\s]+([A-Za-z ,]{3,80})/,                                             'headquarters'],
-    [/[Aa]nnual\s*(?:harvest|output|revenue|turnover|sales)[:\s]+([\d,.]+\s*(?:t(?:on(?:nes?)?)?|MT|NOK|USD|EUR|GBP|billion|million)?[^.]{0,30})/i, 'annual_production'],
-    [/[Ee]xport\s*(?:market|destination)[s]?[:\s]+([A-Za-z ,;]{3,150})/i,            'export_markets'],
-    [/[Cc][Ee][Oo][:\s]+([A-Za-z .]{3,60})/,                                         'key_contacts'],
-    [/[Mm]anaging\s*[Dd]irector[:\s]+([A-Za-z .]{3,60})/,                            'key_contacts'],
   ];
 
   pairs.forEach(([re, key]) => {
@@ -1528,7 +1483,7 @@ function assignField(f, k, v) {
   if (!v) return;
   v = cleanField(v);
   // Allow longer values for prose fields; reject oversized values for structured fields
-  const isProseField = /description|key_contacts/.test(k);
+  const isProseField = /description/.test(k);
   if (!v || v.length > (isProseField ? 1200 : 200)) return;
   // ── Maritime / vessel fields (EN + multilingual) ──
   // Flag/country: bandera(ES), pavillon(FR), flagge(DE), flagg(NO), bandeira(PT), 旗(ZH)
@@ -1653,28 +1608,6 @@ function assignField(f, k, v) {
   // Employees: empleados(ES), employés(FR), ansatte(NO), funcionários(PT)
   else if (/employee|ansatte|empleados|employ.s|funcion.rios|staff|workforce/.test(k))
                                                  f.employees        = f.employees        || v;
-  // ── Investigative intelligence fields ──
-  // Ownership / parent company
-  else if (/parent.?compan|owned.?by|subsidiar|ultimate.?owner|beneficial.?owner/.test(k))
-                                                 f.ownership        = f.ownership        || v;
-  // Founded / established year
-  else if (/\bfounded\b|established|incorporated|start(?:ed)?/.test(k) && /\d{4}/.test(v))
-                                                 f.founded          = f.founded          || v;
-  // Headquarters
-  else if (/headquarter|registered.?address|head.?office|main.?office/.test(k))
-                                                 f.headquarters     = f.headquarters     || v;
-  // Annual production / revenue
-  else if (/annual.?(?:prod|harvest|output|revenue|sales|turnover)|yearly.?prod/.test(k))
-                                                 f.annual_production= f.annual_production|| v;
-  // Violations / incidents
-  else if (/violation|incident|fine\b|sanction|penalty|infringement|complaint/.test(k))
-                                                 f.violations       = f.violations       || v;
-  // Export markets
-  else if (/export.?market|export.?dest|key.?market|sales.?market/.test(k))
-                                                 f.export_markets   = f.export_markets   || v;
-  // Key contacts / executives
-  else if (/\bceo\b|chief.?exec|managing.?director|president|chairman|contact.?person/.test(k))
-                                                 f.key_contacts     = f.key_contacts     || v;
 }
 
 // Source trust order — higher index = more trusted when merging fields
@@ -1710,9 +1643,6 @@ function mergeFields(results, query) {
     'processing_capacity','input_species','output_products','fishmeal_pct','fishoil_pct',
     'vessel_type','call_sign','gross_tonnage','dwt','year_built','mmsi','port_of_registry',
     'length','beam','nav_status','class_soc','_imo',
-    // Investigative intelligence fields
-    'ownership','founded','established_year','headquarters','annual_production',
-    'export_markets','key_contacts',
   ];
 
   for (const k of keys) {
@@ -3060,14 +2990,6 @@ function showSavePreview(info, btnId) {
       { key:'manager',          label:'Manager',              val: info.manager || '' },
       { key:'nav_status',       label:'Nav Status',           val: info.nav_status || '' },
     ]},
-    { label: 'Business Intelligence', showFor: 'all', fields: [
-      { key:'ownership',            label:'Parent Company / Ownership',   val: info.ownership || info.parent_company || '' },
-      { key:'founded',              label:'Founded / Established',        val: info.founded || info.established_year || '' },
-      { key:'headquarters',         label:'Headquarters',                 val: info.headquarters || '' },
-      { key:'annual_production',    label:'Annual Production / Revenue',  val: info.annual_production || '' },
-      { key:'export_markets',       label:'Export Markets',               val: info.export_markets || '' },
-      { key:'key_contacts',         label:'Key Contacts / CEO',           val: info.key_contacts || '' },
-    ]},
     { label: 'Notes & Description', showFor: 'all', full: true, fields: [
       { key:'description', label:'Description', val: info.description || '', type:'textarea', rows: 8 },
       { key:'_notes',      label:'Personal Notes (private)', val: info._notes || '', type:'textarea' },
@@ -3108,9 +3030,9 @@ function showSavePreview(info, btnId) {
   // Auto-enrich: fill empty fields by running a background search if key data is missing
   const name = info.farm_name || info.vessel_name || info.name || '';
   const facilityType = defType;
-  const FARM_KEY_FIELDS   = ['species','country','capacity','production_method','operator','ownership','founded'];
-  const VESSEL_KEY_FIELDS = ['vessel_type','flag','gross_tonnage','year_built','operator','ownership'];
-  const MILL_KEY_FIELDS   = ['processing_capacity','input_species','output_products','country','ownership'];
+  const FARM_KEY_FIELDS   = ['species','country','capacity','production_method','operator'];
+  const VESSEL_KEY_FIELDS = ['vessel_type','flag','gross_tonnage','year_built','operator'];
+  const MILL_KEY_FIELDS   = ['processing_capacity','input_species','output_products','country'];
   const keyFields = facilityType === 'vessel' ? VESSEL_KEY_FIELDS
                   : facilityType === 'mill'   ? MILL_KEY_FIELDS
                   : FARM_KEY_FIELDS;
