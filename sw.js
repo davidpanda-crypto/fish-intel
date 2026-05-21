@@ -5,7 +5,7 @@
  * Works correctly on any base path (localhost, GitHub Pages /fish-intel/, etc.)
  * by computing BASE dynamically from the SW's own URL.
  */
-const CACHE_VER = 'fish-intel-v6';
+const CACHE_VER = 'fish-intel-v7';
 
 // Derive base path from the SW's location (e.g. /fish-intel/ or /)
 const BASE = self.location.pathname.replace(/\/sw\.js$/, '/');

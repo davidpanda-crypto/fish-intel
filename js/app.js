@@ -1778,8 +1778,8 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
                   : facilityType === 'mill'   ? MILL_FIELDS
                   : FARM_FIELDS;
 
-  // Always show required fields; show optional only if a value was found
-  const fieldDefs = rawFields.filter(([,v,req]) => req || v);
+  // Only show fields where a value was actually found — no N/A rows
+  const fieldDefs = rawFields.filter(([,v]) => v);
 
   // Source badges
   const okSrcs = sources.filter(s => s.ok).map(s => esc(s.id)).join(' · ');
@@ -1827,10 +1827,10 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
     : info._facilityType === 'farm'   ? 'Fish Farm / Aquaculture' : 'General';
   const catBadge  = info._category     ? `<span class="chip chip-b">${esc(info._category)}</span>` : '';
   const typeBadge = info._facilityType ? `<span class="chip chip-o">${esc(facilityLabel)}</span>` : '';
-  const specBadge = info.species       ? `<span class="chip chip-g">🐟 ${esc(info.species)}</span>` : '';
-  const watBadge  = info.water_type    ? `<span class="chip chip-b">🌊 ${esc(info.water_type)}</span>` : '';
+  const specBadge = info.species       ? `<span class="chip chip-g">${esc(info.species)}</span>` : '';
+  const watBadge  = info.water_type    ? `<span class="chip chip-b">${esc(info.water_type)}</span>` : '';
   const prodBadge = info.production_method ? `<span class="chip chip-o">${esc(info.production_method)}</span>` : '';
-  const aiBadge   = aiEnhanced ? `<span class="chip chip-ai" title="Fields extracted and verified by Claude AI">🤖 AI-enhanced</span>` : '';
+  const aiBadge   = aiEnhanced ? `<span class="chip chip-ai" title="Fields extracted by Claude AI">AI-verified</span>` : '';
   const verifBadge = info._verified    ? `<span class="chip" style="background:var(--grnlt);color:var(--grn);border-color:var(--grn)">✓ Verified</span>` : '';
   const badgeRow  = [catBadge,typeBadge,specBadge,watBadge,prodBadge,verifBadge,aiBadge].filter(Boolean).join('');
 
@@ -1867,9 +1867,9 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
   // Scrape footer
   const scrapeHTML = `
     <div class="vc-scrape">
-      ${okSrcs ? `<span>📡 <b>Sources:</b> ${okSrcs}</span>` : ''}
-      ${info._savedAt ? `<span>🕐 <b>Scraped:</b> ${new Date(info._savedAt).toLocaleString()}</span>` : ''}
-      ${info._category ? `<span>🏷 <b>Category:</b> ${esc(info._category)}</span>` : ''}
+      ${okSrcs ? `<span>Sources: ${okSrcs}</span>` : ''}
+      ${info._savedAt ? `<span>Retrieved ${new Date(info._savedAt).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}</span>` : ''}
+      ${info._category ? `<span>${esc(info._category)}</span>` : ''}
     </div>`;
 
   // Image gallery HTML (src validated, alt escaped)
@@ -1881,8 +1881,8 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
     </div>`).join('') : '';
 
   const fieldHTML = fieldDefs.map(([l,v]) =>
-    `<div class="vf"><div class="vfl">${esc(l)}</div><div class="vfv${v ? '' : ' vfv-na'}">${v ? esc(v) : 'N/A'}</div></div>`
-  ).join('') || `<div class="vf" style="grid-column:1/-1;color:var(--mut3);font-style:italic;font-size:12px">No structured data extracted — check raw text below.</div>`;
+    `<div class="vf"><div class="vfl">${esc(l)}</div><div class="vfv">${esc(v)}</div></div>`
+  ).join('') || `<div class="vf" style="grid-column:1/-1;color:var(--mut3);font-style:italic;font-size:12px">No structured data available for this record.</div>`;
 
   const rawHTML = sources.filter(s => s.ok && s.text).map(s =>
     `<div style="margin-bottom:10px">
@@ -2375,7 +2375,7 @@ async function runBot() {
 
     let aiEnhanced = false;
     if (claudePromise) {
-      log('🤖 Applying AI field extraction…', 'info');
+      log('Applying AI field extraction…', 'info');
       setProgress(92);
       const claudeFields = await claudePromise.catch(() => ({}));
       const aiFieldCount = Object.keys(claudeFields).filter(k => claudeFields[k]).length;
@@ -2389,7 +2389,7 @@ async function runBot() {
           const desc = await claudePolishDescription(merged, q, searchType).catch(() => null);
           if (desc) merged.description = desc;
         }
-        log(`🤖 AI enhanced ${aiFieldCount} field(s)`, 'ok');
+        log(`AI verified ${aiFieldCount} field(s)`, 'ok');
         aiEnhanced = true;
       }
     }
@@ -3894,7 +3894,7 @@ function renderSaved() {
   updateSavedBadge();
   const records = filteredSaved();
   if (!saved.length) {
-    list.innerHTML = '<div class="empty"><span class="empty-icon">🗂️</span><div class="empty-title">No saved records yet</div><span class="empty-sub">Search for a farm, mill, or vessel — then click <strong>Save</strong> on any result to build your library.</span></div>';
+    list.innerHTML = '<div class="empty"><div class="empty-title">No saved records yet</div><span class="empty-sub">Search for a farm, mill, or vessel — then click <strong>Save</strong> on any result to build your library.</span></div>';
     return;
   }
   if (!records.length) {
@@ -3922,7 +3922,7 @@ function renderSaved() {
         <td>
           <b>${name}</b>${r._verified ? ' <span style="font-size:10px;color:var(--grn);font-weight:600">✓</span>' : ''}
           ${r.owner || r.operator ? `<div style="font-size:10px;color:#727272;margin-top:1px">${esc(r.owner||r.operator)}</div>` : ''}
-          ${r._notes ? `<div style="font-size:10px;color:#7a5c2b;margin-top:2px">📝 ${esc(r._notes.slice(0,50))}</div>` : ''}
+          ${r._notes ? `<div style="font-size:10px;color:#7a5c2b;margin-top:2px">${esc(r._notes.slice(0,50))}</div>` : ''}
         </td>
         <td style="font-family:monospace;font-size:11px">${imo}</td>
         <td><span class="chip chip-b" style="font-size:10px">${cat}</span></td>
@@ -3930,7 +3930,7 @@ function renderSaved() {
         <td><span class="chip chip-g" style="font-size:10px">${species}</span></td>
         <td>${country}</td>
         <td style="font-size:11px;color:var(--mut3);max-width:180px">${desc}</td>
-        <td style="white-space:nowrap;color:var(--mut2);font-size:11px">🕐 ${dt}</td>
+        <td style="white-space:nowrap;color:var(--mut2);font-size:11px">${dt}</td>
         <td class="td-actions">
           <button class="btn-exp${r._verified ? ' btn-verified' : ''}" onclick="toggleVerified('${id}')" title="${r._verified ? 'Remove verification' : 'Mark as verified'}">${r._verified ? '✓ Verified' : 'Verify'}</button>
           <button class="btn-exp" onclick="editNote('${id}')">Note</button>
