@@ -113,19 +113,10 @@ function validateFieldValue(key, val) {
     case 'annual_production': {
       return /\d/.test(v) ? v.slice(0, 100) : '';
     }
-    case 'violations': {
-      return v.length >= 10 ? v.slice(0, 600) : '';
-    }
     case 'export_markets': {
       return v.slice(0, 200);
     }
     case 'key_contacts': {
-      return v.slice(0, 200);
-    }
-    case 'environmental_record': {
-      return v.length >= 10 ? v.slice(0, 500) : '';
-    }
-    case 'supply_chain': {
       return v.slice(0, 200);
     }
     case 'species': case 'input_species': {
@@ -710,9 +701,6 @@ function claudeFieldSchema(searchType) {
     annual_production:    'Stated annual production or processing volume with units (e.g. "22,000 t/yr")',
     export_markets:       'Key export destinations or customer markets, comma-separated',
     key_contacts:         'Named executives, CEO, or key managers if mentioned',
-    violations:           'Any regulatory violations, fines, environmental incidents, license suspensions, or controversies found in the text',
-    environmental_record: 'Environmental compliance record, ESG notes, pollution incidents, or sustainability programme details',
-    supply_chain:         'Key upstream suppliers (feed, fingerlings) or downstream buyers / customers if named',
   };
   const base = {
     name:        'Full facility name',
@@ -1501,6 +1489,7 @@ function extractFields(doc, text) {
     [/[Cc][Ee][Oo][:\s]+([A-Za-z .]{3,60})/,                                         'key_contacts'],
     [/[Mm]anaging\s*[Dd]irector[:\s]+([A-Za-z .]{3,60})/,                            'key_contacts'],
   ];
+
   pairs.forEach(([re, key]) => {
     if (key === '_coords') {
       const m = text.match(re);
@@ -1539,7 +1528,7 @@ function assignField(f, k, v) {
   if (!v) return;
   v = cleanField(v);
   // Allow longer values for prose fields; reject oversized values for structured fields
-  const isProseField = /description|violations|environmental|supply_chain|key_contacts/.test(k);
+  const isProseField = /description|key_contacts/.test(k);
   if (!v || v.length > (isProseField ? 1200 : 200)) return;
   // ── Maritime / vessel fields (EN + multilingual) ──
   // Flag/country: bandera(ES), pavillon(FR), flagge(DE), flagg(NO), bandeira(PT), 旗(ZH)
@@ -1686,12 +1675,6 @@ function assignField(f, k, v) {
   // Key contacts / executives
   else if (/\bceo\b|chief.?exec|managing.?director|president|chairman|contact.?person/.test(k))
                                                  f.key_contacts     = f.key_contacts     || v;
-  // Environmental record
-  else if (/environmental|esg|sustainability|carbon|emissions|ecological|impact/.test(k))
-                                                 f.environmental_record = f.environmental_record || v;
-  // Supply chain
-  else if (/supplier|feed.?supplier|buyer|customer|purchaser|offtaker/.test(k))
-                                                 f.supply_chain     = f.supply_chain     || v;
 }
 
 // Source trust order — higher index = more trusted when merging fields
@@ -1729,7 +1712,7 @@ function mergeFields(results, query) {
     'length','beam','nav_status','class_soc','_imo',
     // Investigative intelligence fields
     'ownership','founded','established_year','headquarters','annual_production',
-    'violations','export_markets','key_contacts','environmental_record','supply_chain',
+    'export_markets','key_contacts',
   ];
 
   for (const k of keys) {
@@ -3084,11 +3067,6 @@ function showSavePreview(info, btnId) {
       { key:'annual_production',    label:'Annual Production / Revenue',  val: info.annual_production || '' },
       { key:'export_markets',       label:'Export Markets',               val: info.export_markets || '' },
       { key:'key_contacts',         label:'Key Contacts / CEO',           val: info.key_contacts || '' },
-    ]},
-    { label: 'Compliance & Environment', showFor: 'all', full: true, fields: [
-      { key:'violations',           label:'Violations / Incidents',       val: info.violations || '', type:'textarea' },
-      { key:'environmental_record', label:'Environmental Record / ESG',   val: info.environmental_record || '', type:'textarea' },
-      { key:'supply_chain',         label:'Supply Chain (suppliers/buyers)', val: info.supply_chain || '', type:'textarea' },
     ]},
     { label: 'Notes & Description', showFor: 'all', full: true, fields: [
       { key:'description', label:'Description', val: info.description || '', type:'textarea', rows: 8 },
