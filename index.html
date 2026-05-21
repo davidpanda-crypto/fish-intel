@@ -99,11 +99,6 @@
       <div class="hs"><span class="hs-v" id="s-ships">0</span><div class="hs-l">Records</div></div>
       <div class="hs"><span class="hs-v" id="s-images">0</span><div class="hs-l">Images</div></div>
     </div>
-    <button class="hdr-ai-btn" onclick="openSettings()" aria-label="Claude AI settings" title="Configure Claude AI">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07M8.46 8.46a5 5 0 0 0 0 7.07"/></svg>
-      AI
-      <span class="claude-dot" id="claude-dot" style="display:none" title="Claude AI active"></span>
-    </button>
   </div>
   <div class="site-subhdr">
     <div class="site-subhdr-inner"><span id="dateline-date"></span></div>
@@ -345,5 +340,11 @@
 
 <!-- App logic -->
 <script src="js/app.js?v=11"></script>
+<!-- ── Floating AI button ── -->
+<button class="ai-fab" id="ai-fab" onclick="openSettings()" aria-label="Claude AI settings" title="Configure Claude AI">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07M8.46 8.46a5 5 0 0 0 0 7.07"/></svg>
+  AI
+  <span class="claude-dot" id="claude-dot" style="display:none" title="Claude AI active"></span>
+</button>
 </body>
 </html>
