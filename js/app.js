@@ -2706,7 +2706,7 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
         const summ = await summResp.json();
         if (summ.extract) {
           const f = {};
-          f.description = summ.extract.slice(0, 600);
+          f.description = summ.extract.slice(0, 1200);
           if (summ.title)       f.vessel_name = summ.title;
           if (summ.coordinates) { f.latitude = String(summ.coordinates.lat); f.longitude = String(summ.coordinates.lon); }
           const imoM = summ.extract.match(/\bIMO[\s:]*(\d{7})\b/i);
