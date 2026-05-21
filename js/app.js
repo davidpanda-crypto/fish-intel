@@ -3047,8 +3047,27 @@ function showSavePreview(info, btnId) {
     // Banner with live phase label
     const enrichBanner = document.createElement('div');
     enrichBanner.id = 'sp-enrich-banner';
-    enrichBanner.style.cssText = 'padding:8px 16px;font-size:12px;color:#555;background:#f5f5f0;border-bottom:1px solid #e2e2e2;display:flex;align-items:center;gap:8px;';
-    const setPhase = msg => { if (document.getElementById('sp-enrich-banner')) enrichBanner.innerHTML = `<span style="animation:spin 1s linear infinite;display:inline-block">⟳</span> ${esc(msg)}`; };
+    enrichBanner.style.cssText = 'padding:8px 16px;font-size:11.5px;color:#555;background:#f5f5f0;border-bottom:1px solid #e2e2e2;display:flex;align-items:center;gap:8px;flex-wrap:wrap;';
+
+    // Found-fields accumulator shown in the banner
+    const foundFields = new Set();
+    const FIELD_LABELS = {
+      farm_name:'Name', vessel_name:'Name', operator:'Operator', country:'Country',
+      region:'Region', latitude:'Lat', longitude:'Lng', species:'Species',
+      water_type:'Water', capacity:'Capacity', production_method:'Method',
+      certification:'Certification', license:'License', employees:'Employees',
+      vessel_type:'Type', flag:'Flag', gross_tonnage:'Tonnage', year_built:'Built',
+      port_of_registry:'Port', owner:'Owner', manager:'Manager', call_sign:'Call Sign',
+      processing_capacity:'Capacity', input_species:'Input Species', description:'Description',
+    };
+    let _currentPhase = 'Looking up databases…';
+    const setPhase = msg => {
+      _currentPhase = msg;
+      const b = document.getElementById('sp-enrich-banner');
+      if (!b) return;
+      const found = foundFields.size ? `<span style="color:#2a7a2a;font-weight:600"> · Found: ${[...foundFields].join(', ')}</span>` : '';
+      b.innerHTML = `<span style="animation:spin 1s linear infinite;display:inline-block">⟳</span> <span style="font-weight:600">${esc(msg)}</span>${found}`;
+    };
     setPhase('Looking up databases…');
     document.querySelector('.sp-inner').insertBefore(enrichBanner, document.getElementById('sp-content'));
 
@@ -3056,7 +3075,11 @@ function showSavePreview(info, btnId) {
     const patchField = (k, v) => {
       if (!v || !modal.classList.contains('show')) return;
       const el = modal.querySelector(`.sp-input[data-key="${CSS.escape(k)}"]`);
-      if (el && !el.value.trim()) { el.value = v; el.style.background = '#fffbe6'; }
+      if (el && !el.value.trim()) {
+        el.value = v;
+        el.style.background = '#fffbe6';
+        if (FIELD_LABELS[k]) { foundFields.add(FIELD_LABELS[k]); setPhase(_currentPhase); }
+      }
     };
     // Patch all fields from a merged result object
     const patchAll = merged => {
