@@ -66,15 +66,13 @@ function validateFieldValue(key, val) {
   switch (key) {
     case 'latitude': {
       const n = parseFloat(v.replace(/[°NS ]/gi,''));
-      // Reject 0 — equator is never a real farm/vessel location in context
       if (isNaN(n) || n < -90 || n > 90 || n === 0) return '';
-      return String(n);
+      return parseFloat(n.toFixed(5)).toString(); // max 5 decimal places (~1 m precision)
     }
     case 'longitude': {
       const n = parseFloat(v.replace(/[°EW ]/gi,''));
-      // Reject 0 — prime meridian is almost never a real aquaculture location
       if (isNaN(n) || n < -180 || n > 180 || n === 0) return '';
-      return String(n);
+      return parseFloat(n.toFixed(5)).toString();
     }
     case 'year_built': {
       const m = v.match(/\b(1[89]\d{2}|20[0-2]\d)\b/);
@@ -102,9 +100,11 @@ function validateFieldValue(key, val) {
       return v.length >= 30 ? v.slice(0, 500) : '';
     }
     case 'species': case 'input_species': {
+      // Reject UI / nav boilerplate that leaks through scraping
+      if (/outside\s*fish\s*in|inside\s*fish|view\s*all|see\s*more|learn\s*more|read\s*more|shop\s*now|click\s*here/i.test(v)) return '';
       // Title-case, deduplicate quick pass, reject bare generic nouns
       const norm = v.replace(/\b\w/g, c => c.toUpperCase()).trim();
-      if (/^(Fish|Seafood|Animal|Marine|Aquatic|Product|Species|Other|Various|Mixed)$/i.test(norm)) return '';
+      if (/^(Fish|Seafood|Animal|Marine|Aquatic|Product|Species|Other|Various|Mixed|All|None)$/i.test(norm)) return '';
       return norm.slice(0, 120);
     }
     case 'certification': {
@@ -116,9 +116,13 @@ function validateFieldValue(key, val) {
       if (/\bhalal\b/i.test(v)) return 'Halal Certified';
       const isoM = v.match(/iso\s*(\d{4,5})/i);
       if (isoM) return `ISO ${isoM[1]} Certified`;
+      // Reject bare generic words that aren't real certification names
+      if (/^(certified|yes|true|accredited|approved|compliant)$/i.test(v.trim())) return '';
       return v.slice(0, 80);
     }
     case 'country': case 'flag': {
+      // Reject org/foundation names masquerading as countries
+      if (/\b(asc|fao|msc|bap|ices|imo|wwf|international|foundation|organization|association|institute|certified|standard)\b/i.test(v)) return '';
       // Map ISO-3, ISO-2, and common abbreviations to full country names
       const ISO_MAP = {
         UK:'United Kingdom', GB:'United Kingdom', US:'United States', USA:'United States',
@@ -2267,10 +2271,15 @@ async function runBot() {
     setProgress(100);
     log(`Complete — ${allImgs.length} image(s) collected${aiEnhanced ? ' · AI-enhanced ✓' : ''}`, 'ok');
 
-    // Store in knowledge base
-    const cardName = isVessel
+    // Build card name — then sanity-check it matches the search query.
+    // If the extracted name shares no token with q, the scraper grabbed a
+    // competitor's name from a shared industry page; fall back to the query.
+    const rawCardName = isVessel
       ? (merged.vessel_name || q)
       : (merged.farm_name || merged.vessel_name || merged.name || q);
+    const qTokens = q.toLowerCase().replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter(t => t.length > 2);
+    const nameMatches = qTokens.length === 0 || qTokens.some(t => rawCardName.toLowerCase().includes(t));
+    const cardName = nameMatches ? rawCardName : q;
     learnFromSearch(cardName, merged, scrapeResults);
     scrapeResults.forEach(s => {
       try { if (s.url) learnFromDomain(new URL(s.url).hostname, s.ok, Object.keys(s.fields||{}).filter(k=>!k.startsWith('_')).length); } catch {}
