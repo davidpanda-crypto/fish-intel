@@ -245,10 +245,12 @@ function normalizeFields(merged) {
   if (merged.country) merged.country = merged.country.replace(/\b\w/g, c => c.toUpperCase()).slice(0, 60);
   if (!merged.country && merged.flag) merged.country = merged.flag;
 
-  // ── Description: trim to ≤1000 chars at a sentence boundary
+  // ── Description: trim to ≤1000 chars, always ending on a full sentence
   if (merged.description && merged.description.length > 1000) {
-    const cut = merged.description.slice(0, 1000).replace(/\s+\S+$/, '');
-    merged.description = cut + (cut.length < merged.description.length ? '…' : '');
+    const chunk = merged.description.slice(0, 1000);
+    // Find the last sentence-ending punctuation (. ! ?) within the chunk
+    const lastSentEnd = Math.max(chunk.lastIndexOf('.'), chunk.lastIndexOf('!'), chunk.lastIndexOf('?'));
+    merged.description = lastSentEnd > 50 ? chunk.slice(0, lastSentEnd + 1) : chunk.replace(/\s+\S+$/, '') + '…';
   }
 
   // ── Remove runaway strings in non-description fields (likely scraped boilerplate)
@@ -778,7 +780,12 @@ ${existingDesc ? `Existing description to improve:\n${existingDesc}\n\n` : ''}St
 
   try {
     const desc = await callClaude(system, user, 600);
-    return desc?.trim().slice(0, 1000) || null;
+    if (!desc) return null;
+    const trimmed = desc.trim();
+    if (trimmed.length <= 1000) return trimmed;
+    const chunk = trimmed.slice(0, 1000);
+    const lastSentEnd = Math.max(chunk.lastIndexOf('.'), chunk.lastIndexOf('!'), chunk.lastIndexOf('?'));
+    return lastSentEnd > 50 ? chunk.slice(0, lastSentEnd + 1) : chunk.replace(/\s+\S+$/, '');
   } catch { return null; }
 }
 
