@@ -9,7 +9,7 @@
  */
 (function () {
   const DB_NAME    = 'fish-intel-db';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;  // v2: records keyPath fixed to 'id'
   let _db = null;
 
   function open() {
@@ -18,17 +18,21 @@
       const req = indexedDB.open(DB_NAME, DB_VERSION);
 
       req.onupgradeneeded = e => {
-        const db = e.target.result;
-        ['records', 'cache', 'knowledge'].forEach(name => {
-          if (!db.objectStoreNames.contains(name)) {
-            db.createObjectStore(name, { keyPath: 'key' });
-          }
-        });
-        // records store uses 'id' as keyPath — recreate with correct keyPath
-        if (db.objectStoreNames.contains('records')) {
+        const db  = e.target.result;
+        const old = e.oldVersion;
+
+        // cache + knowledge always use keyPath:'key'
+        if (!db.objectStoreNames.contains('cache'))
+          db.createObjectStore('cache',     { keyPath: 'key' });
+        if (!db.objectStoreNames.contains('knowledge'))
+          db.createObjectStore('knowledge', { keyPath: 'key' });
+
+        // records uses keyPath:'id' — delete if it was accidentally created
+        // with keyPath:'key' in DB v1, then recreate correctly.
+        if (db.objectStoreNames.contains('records') && old < 2)
           db.deleteObjectStore('records');
-        }
-        db.createObjectStore('records', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('records'))
+          db.createObjectStore('records',   { keyPath: 'id' });
       };
 
       req.onsuccess = e => { _db = e.target.result; resolve(_db); };

@@ -1,16 +1,23 @@
 /**
  * Fish Farm & Ship Intelligence — Service Worker
  * Strategy: Cache-first for app shell, network-first for API calls.
+ *
+ * Works correctly on any base path (localhost, GitHub Pages /fish-intel/, etc.)
+ * by computing BASE dynamically from the SW's own URL.
  */
-const CACHE_VER  = 'fish-intel-v4';
+const CACHE_VER = 'fish-intel-v5';
+
+// Derive base path from the SW's location (e.g. /fish-intel/ or /)
+const BASE = self.location.pathname.replace(/\/sw\.js$/, '/');
+
 const SHELL_URLS = [
-  '/',
-  '/index.html',
-  '/css/style.css',
-  '/js/app.js',
-  '/js/modules/idb.js',
-  '/js/modules/router.js',
-  '/js/modules/cache.js',
+  BASE,
+  BASE + 'index.html',
+  BASE + 'css/style.css',
+  BASE + 'js/app.js',
+  BASE + 'js/modules/idb.js',
+  BASE + 'js/modules/router.js',
+  BASE + 'js/modules/cache.js',
 ];
 
 // ── Install: pre-cache app shell ──────────────────────────────────────────────
@@ -46,7 +53,9 @@ self.addEventListener('fetch', e => {
   if (url.origin !== self.location.origin) return;
 
   const isHTML = e.request.headers.get('accept')?.includes('text/html') ||
-                 url.pathname.endsWith('.html') || url.pathname === '/';
+                 url.pathname.endsWith('.html') ||
+                 url.pathname === BASE ||
+                 url.pathname === BASE.slice(0, -1); // trailing-slash variant
 
   if (isHTML) {
     // Network-first: always try to get fresh HTML; cache as offline fallback

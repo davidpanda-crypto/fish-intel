@@ -527,7 +527,8 @@ window.addEventListener('load', async () => {
 
   // 3. Register service worker for offline + asset caching
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(e =>
+    // Use relative path so it works on any base (localhost, GitHub Pages /fish-intel/, etc.)
+    navigator.serviceWorker.register('sw.js', { scope: './' }).catch(e =>
       console.warn('[SW] Registration failed:', e)
     );
   }
@@ -559,7 +560,7 @@ const CLAUDE_VER  = '2023-06-01';
 async function getClaudeKey() {
   try {
     const entry = window.AppIDB ? await AppIDB.get('knowledge', 'claude-settings') : null;
-    return entry?.key || null;
+    return entry?.apiKey || null;  // apiKey ≠ key (IDB record key)
   } catch { return null; }
 }
 async function getClaudeModel() {
@@ -568,9 +569,9 @@ async function getClaudeModel() {
     return entry?.model || 'claude-3-5-haiku-20241022';
   } catch { return 'claude-3-5-haiku-20241022'; }
 }
-async function saveClaudeSettings(key, model) {
+async function saveClaudeSettings(apiKey, model) {
   try {
-    if (window.AppIDB) await AppIDB.put('knowledge', { key: 'claude-settings', key: key, model });
+    if (window.AppIDB) await AppIDB.put('knowledge', { key: 'claude-settings', apiKey, model });
   } catch {}
 }
 
@@ -603,7 +604,7 @@ async function saveClaudeKey() {
   const model = modelSel?.value || 'claude-3-5-haiku-20241022';
   try {
     if (window.AppIDB) {
-      await AppIDB.put('knowledge', { key: 'claude-settings', key: raw || null, model });
+      await AppIDB.put('knowledge', { key: 'claude-settings', apiKey: raw || null, model });
     }
     updateClaudeStatus(!!raw);
     updateClaudeHeaderDot();
@@ -614,7 +615,7 @@ async function saveClaudeKey() {
 async function clearClaudeKey() {
   if (!confirm('Remove the saved API key?')) return;
   try {
-    if (window.AppIDB) await AppIDB.put('knowledge', { key: 'claude-settings', key: null, model: 'claude-3-5-haiku-20241022' });
+    if (window.AppIDB) await AppIDB.put('knowledge', { key: 'claude-settings', apiKey: null, model: 'claude-3-5-haiku-20241022' });
     document.getElementById('claude-key-input').value = '';
     updateClaudeStatus(false);
     updateClaudeHeaderDot();
@@ -3849,7 +3850,7 @@ function renderKnowledge() {
       <td style="text-align:center">${fCount}</td>
       <td><div style="display:flex;align-items:center;gap:6px"><div class="know-bar"><div class="${fillCls}" style="width:${confPct}%"></div></div><span style="font-size:11px;color:var(--mut2)">${confPct}%</span></div></td>
       <td style="color:var(--mut2);font-size:11px;white-space:nowrap">${esc(ageStr)}</td>
-      <td><button class="btn-exp" onclick="setMode('search');document.getElementById('q').value=${JSON.stringify(display)};document.getElementById('q').focus()">Re-search</button></td>
+      <td><button class="btn-exp" onclick="setMode('search');document.getElementById('main-search').value=${JSON.stringify(display)};document.getElementById('main-search').focus()">Re-search</button></td>
     </tr>`;
   }).join('');
 
