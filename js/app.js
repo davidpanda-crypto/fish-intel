@@ -1890,46 +1890,17 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
       <div class="text-view">${hlIMO(s.text)}</div>
     </div>`).join('');
 
-  // Thumbnail — first image pinned to header right
-  const thumbImg = imgs[0];
-  const thumbHTML = thumbImg ? `
-    <div class="vc-thumb" onclick="lb('${encodeURIComponent(thumbImg.src)}','${encodeURIComponent(thumbImg.label)}')">
-      <img src="${esc(thumbImg.src)}" alt="${esc(thumbImg.label)}" loading="lazy"
-           onerror="this.parentElement.style.display='none'">
-    </div>` : '';
-
-  // Quick-fact chips: up to 4 most scannable facts
-  const factDefs = isVesselCard
-    ? [info.flag||info.country, info.vessel_type, info.year_built ? `Built ${info.year_built}` : null, info.gross_tonnage ? `${info.gross_tonnage} GT` : null]
-    : [info.country||info.flag, info.species, info.capacity, info.production_method];
-  const factsHTML = factDefs.filter(Boolean).map(f => `<span class="vc-fact">${esc(f)}</span>`).join('');
-
-  // Remaining images (skip first — already shown as thumbnail)
-  const galleryImgs = thumbImg ? imgs.slice(1) : imgs;
-  const galleryHTML = galleryImgs.map(img =>
-    `<div class="iw" onclick="lb('${encodeURIComponent(img.src)}','${encodeURIComponent(img.label)}')">
-      <img src="${esc(img.src)}" alt="${esc(img.label)}" loading="lazy"
-           onerror="this.parentElement.style.display='none'">
-      <div class="isrc">${esc(img.label)}</div>
-    </div>`).join('');
-
   const savePayload = esc(JSON.stringify({name, imo, ...info}));
   return `
   <hr>
   <div class="vessel-card" id="${uid}">
-    <div class="vc-header">
-      <div class="vc-header-text">
-        <div class="vc-name">${safeName}</div>
-        ${imo ? `<div class="vc-imo">IMO ${safeIMO}</div>` : ''}
-        ${factsHTML ? `<div class="vc-facts">${factsHTML}</div>` : ''}
-      </div>
-      ${thumbHTML}
-    </div>
+    <div class="vc-name">${safeName}</div>
+    ${imo ? `<div class="vc-imo">IMO ${safeIMO}</div>` : ''}
     ${badgeRow ? `<div class="vc-badges">${badgeRow}</div>` : ''}
     ${identityHTML}
     ${descHTML}
     <div class="vc-grid">${fieldHTML}</div>
-    ${galleryImgs.length ? `<div class="label" style="margin-bottom:8px">Images (${imgs.length})</div><div class="img-gallery">${galleryHTML}</div>` : ''}
+    ${imgs.length ? `<div class="label" style="margin-bottom:8px">Images (${imgs.length})</div><div class="img-gallery">${imgHTML}</div>` : ''}
     <div class="ship-links">${linkHTML}</div>
     ${noteText}
     ${scrapeHTML}
@@ -1959,18 +1930,10 @@ function copyText(uid) {
 /* ═══════════════════════════════════════════
    THE BOT
 ═══════════════════════════════════════════ */
-function fillSearch(q) {
-  const el = document.getElementById('main-search');
-  if (el) { el.value = q; el.focus(); runBot(); }
-}
-
 async function runBot() {
   if (isRunning) return;
   const raw = document.getElementById('main-search').value.trim();
   if (!raw) { toast('Enter a name or IMO number'); return; }
-  // Hide empty state once a search starts
-  const es = document.getElementById('empty-state');
-  if (es) es.style.display = 'none';
 
   // Sanitize input
   const q = raw.replace(/[<>"']/g,'').slice(0,200);
