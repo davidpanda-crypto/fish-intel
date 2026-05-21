@@ -1125,6 +1125,64 @@ async function fetchBingImages(query, signal) {
   return imgs.slice(0, 8);
 }
 
+/**
+ * Fetch the main image(s) for an entity from Wikipedia's REST API.
+ * No proxy needed — Wikipedia has open CORS headers.
+ * Returns up to 3 images: article thumbnail + any infobox images.
+ */
+async function fetchWikipediaImages(query, signal) {
+  const imgs = [];
+  try {
+    // 1. Search Wikipedia for the best article title
+    const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srlimit=1&format=json&origin=*`;
+    const searchRes = await fetch(searchUrl, { signal: timedSignal(signal, 6000) });
+    if (!searchRes.ok) return imgs;
+    const searchData = await searchRes.json();
+    const title = searchData?.query?.search?.[0]?.title;
+    if (!title) return imgs;
+
+    // 2. Fetch summary (includes thumbnail of the article's lead image)
+    const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+    const summaryRes = await fetch(summaryUrl, { signal: timedSignal(signal, 6000) });
+    if (!summaryRes.ok) return imgs;
+    const summary = await summaryRes.json();
+
+    const thumb = summary.originalimage?.source || summary.thumbnail?.source;
+    if (thumb && isValidURL(thumb)) {
+      imgs.push({ src: thumb, label: `${title} (Wikipedia)` });
+    }
+
+    // 3. Fetch additional page images (infobox photos, facility images)
+    const imgUrl = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=images&imlimit=10&format=json&origin=*`;
+    const imgRes = await fetch(imgUrl, { signal: timedSignal(signal, 5000) });
+    if (!imgRes.ok) return imgs;
+    const imgData = await imgRes.json();
+    const page = Object.values(imgData?.query?.pages || {})[0];
+    const wikiImgs = (page?.images || [])
+      .map(i => i.title)
+      .filter(t => t && !/flag|icon|logo|symbol|blank|commons-logo|question|edit|arrow/i.test(t))
+      .slice(0, 4);
+
+    // Resolve each image to a direct URL via imageinfo API
+    if (wikiImgs.length) {
+      const infoUrl = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(wikiImgs.join('|'))}&prop=imageinfo&iiprop=url&iiurlwidth=800&format=json&origin=*`;
+      const infoRes = await fetch(infoUrl, { signal: timedSignal(signal, 5000) });
+      if (infoRes.ok) {
+        const infoData = await infoRes.json();
+        Object.values(infoData?.query?.pages || {}).forEach(p => {
+          const url = p?.imageinfo?.[0]?.thumburl || p?.imageinfo?.[0]?.url;
+          if (url && isValidURL(url) && !imgs.some(i => i.src === url)) {
+            imgs.push({ src: url, label: (p.title || '').replace(/^File:/i, '').replace(/_/g, ' ').replace(/\.[a-z]+$/i, '') });
+          }
+        });
+      }
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+  }
+  return imgs.slice(0, 4);
+}
+
 /* ═══════════════════════════════════════════
    FIELD EXTRACTION (all values sanitized)
 ═══════════════════════════════════════════ */
@@ -2051,27 +2109,31 @@ async function runBot() {
 
     // ── Image fetch runs in parallel with scraping — don't wait for scrape to finish ──
     // Three targeted queries per facility type to hit image-rich industry sources
+    // Image queries: entity name + specific visual terms so results are OF the facility/vessel
     const imgQ1 = isVessel
-      ? `${q} ship vessel photo site:marinetraffic.com OR site:vesselfinder.com OR site:fleetmon.com`
+      ? `"${q}" ship vessel photo site:marinetraffic.com OR site:vesselfinder.com OR site:fleetmon.com OR site:shipspotting.com`
       : isMill
-        ? `${q} fishmeal processing plant facility photo`
-        : `${q} fish farm aquaculture facility aerial photo`;
+        ? `"${q}" fishmeal processing plant facility photo`
+        : `"${q}" fish farm aquaculture facility aerial photo`;
     const imgQ2 = isVessel
-      ? `${q} vessel IMO shipspotting photo sea`
+      ? `"${q}" vessel at sea photo shipspotting`
       : isMill
-        ? `${q} feed mill plant site:seafoodsource.com OR site:undercurrentnews.com OR site:intrafish.com`
-        : `${q} aquaculture farm site:seafoodsource.com OR site:intrafish.com OR site:undercurrentnews.com`;
+        ? `"${q}" feed mill plant site:seafoodsource.com OR site:undercurrentnews.com OR site:intrafish.com`
+        : `"${q}" salmon farm net pen cage photo site:seafoodsource.com OR site:intrafish.com OR site:undercurrentnews.com`;
     const imgQ3 = isVessel
-      ? `${q} ship at sea cargo tanker bulk fishing`
+      ? `"${q}" ship IMO photo cargo tanker fishing`
       : isMill
-        ? `${q} fishmeal plant production site:iffo.com OR site:fis.com`
-        : `${q} salmon farm cage net pen aerial`;
+        ? `"${q}" fishmeal production facility aerial`
+        : `"${q}" aquaculture farm facility photo Norway Chile Canada`;
+
     const imgPromise = document.getElementById('opt-imgs').checked
       ? Promise.all([
+          // Wikipedia images first — direct API, no proxy, always specific to the entity
+          fetchWikipediaImages(q, signal).catch(() => []),
           fetchBingImages(imgQ1, signal).catch(() => []),
           fetchBingImages(imgQ2, signal).catch(() => []),
           fetchBingImages(imgQ3, signal).catch(() => []),
-        ]).then(([a, b, c]) => [...a, ...b, ...c])
+        ]).then(([wiki, a, b, c]) => [...wiki, ...a, ...b, ...c])
       : Promise.resolve([]);
 
     const DISCOVERY_IDS = ['Web-Discovery','DDG-Search','Google-Search','Broad-Search','Intl-Search'];
@@ -2158,18 +2220,28 @@ async function runBot() {
     setProgress(70);
 
     /* Step 3: Images — parallel fetch already started above, just collect result */
-    let allImgs = scrapeResults.flatMap(r => r.imgs || []);
-    const bingImgs = await imgPromise;
-    if (bingImgs.length) log(`${bingImgs.length} image(s) from Bing`, 'img');
-    allImgs = [...allImgs, ...bingImgs];
+    // Only take page images from sources that found at least 1 relevant field.
+    // A source with 0 fields scraped an irrelevant/blocked page — its images are generic noise.
+    const relevantPageImgs = scrapeResults
+      .filter(r => r.ok && Object.keys(r.fields || {}).filter(k => !k.startsWith('_')).length >= 1)
+      .flatMap(r => r.imgs || []);
 
-    // Deduplicate images — by full URL and by filename (catches same image at different CDN paths)
+    const targetedImgs = await imgPromise; // Wikipedia + Bing queries — entity-specific
+    if (targetedImgs.length) log(`${targetedImgs.length} targeted image(s) collected`, 'img');
+
+    // Targeted images first (Wikipedia, Bing), then relevant page images
+    let allImgs = [...targetedImgs, ...relevantPageImgs];
+
+    // Stock-photo / generic CDN domains — these are never photos OF a specific facility
+    const STOCK_DOMAINS = /gettyimages|shutterstock|istockphoto|alamy|depositphotos|dreamstime|123rf|bigstockphoto|stock\.adobe|unsplash|pexels|freepik/i;
+
+    // Deduplicate by URL and filename; reject stock-photo domains
     const seenImgs = new Set();
     const seenFilenames = new Set();
     allImgs = allImgs.filter(img => {
       if (!img?.src) return false;
+      if (STOCK_DOMAINS.test(img.src)) return false;   // reject stock photos
       if (seenImgs.has(img.src)) return false;
-      // Also deduplicate by the last path segment (filename) to avoid CDN duplicates
       const fname = img.src.split('/').pop().split('?')[0].toLowerCase();
       if (fname.length > 6 && seenFilenames.has(fname)) return false;
       seenImgs.add(img.src);
