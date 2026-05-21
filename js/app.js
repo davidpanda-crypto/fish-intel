@@ -3034,50 +3034,131 @@ function showSavePreview(info, btnId) {
   document.getElementById('sp-content').innerHTML = `<div class="sp-grid">${rowHTML}</div>`;
   modal.classList.add('show');
 
-  // Auto-enrich: fill empty fields by running a background search if key data is missing
+  // ── Auto-enrich: always runs when we have a name ──────────────────────────
   const name = info.farm_name || info.vessel_name || info.name || '';
   const facilityType = defType;
-  const FARM_KEY_FIELDS   = ['species','country','capacity','production_method','operator'];
-  const VESSEL_KEY_FIELDS = ['vessel_type','flag','gross_tonnage','year_built','operator'];
-  const MILL_KEY_FIELDS   = ['processing_capacity','input_species','output_products','country'];
-  const keyFields = facilityType === 'vessel' ? VESSEL_KEY_FIELDS
-                  : facilityType === 'mill'   ? MILL_KEY_FIELDS
-                  : FARM_KEY_FIELDS;
-  const missingKeys = keyFields.filter(k => !info[k]);
 
-  if (name && missingKeys.length >= 2) {
+  if (name) {
+    if (enrichAC) enrichAC.abort();
+    const ac = new AbortController();
+    enrichAC = ac;
+    const signal = ac.signal;
+
+    // Banner with live phase label
     const enrichBanner = document.createElement('div');
     enrichBanner.id = 'sp-enrich-banner';
     enrichBanner.style.cssText = 'padding:8px 16px;font-size:12px;color:#555;background:#f5f5f0;border-bottom:1px solid #e2e2e2;display:flex;align-items:center;gap:8px;';
-    enrichBanner.innerHTML = '<span style="animation:spin 1s linear infinite;display:inline-block">⟳</span> Searching for missing fields…';
+    const setPhase = msg => { if (document.getElementById('sp-enrich-banner')) enrichBanner.innerHTML = `<span style="animation:spin 1s linear infinite;display:inline-block">⟳</span> ${esc(msg)}`; };
+    setPhase('Looking up databases…');
     document.querySelector('.sp-inner').insertBefore(enrichBanner, document.getElementById('sp-content'));
 
+    // Patch a single field into the modal (only if currently empty)
+    const patchField = (k, v) => {
+      if (!v || !modal.classList.contains('show')) return;
+      const el = modal.querySelector(`.sp-input[data-key="${CSS.escape(k)}"]`);
+      if (el && !el.value.trim()) { el.value = v; el.style.background = '#fffbe6'; }
+    };
+    // Patch all fields from a merged result object
+    const patchAll = merged => {
+      for (const [k, v] of Object.entries(merged)) { if (v) patchField(k, v); }
+    };
+    // Collect current modal values (for Claude)
+    const currentData = () => {
+      const d = {};
+      modal.querySelectorAll('.sp-input').forEach(el => { if (el.value.trim()) d[el.dataset.key] = el.value.trim(); });
+      return d;
+    };
+
     (async () => {
+      const enrichTexts = []; // text sources accumulated for Claude
+
       try {
-        if (enrichAC) enrichAC.abort();
-        const ac = new AbortController();
-        enrichAC = ac;
-        let extra = [];
+        // ── Phase 1: Structured API sources ─────────────────────────────────
+        setPhase('Querying databases…');
+        let apiResults = [];
         if (facilityType === 'vessel') {
-          const vl = await queryVesselAPIs(name, '', '', ac.signal).catch(() => ({ results:[] }));
-          extra = vl.results || [];
+          const vl = await queryVesselAPIs(name, '', '', signal).catch(() => ({ results: [] }));
+          apiResults = vl.results || [];
         } else {
-          extra = await queryFarmAPIs(name, ac.signal, new Date().getFullYear()).catch(() => []);
+          apiResults = await queryFarmAPIs(name, signal, new Date().getFullYear()).catch(() => []);
         }
-        if (!modal.classList.contains('show')) return; // modal closed while searching
-        const merged = mergeFields(extra, name);
-        // Patch only empty inputs in the modal
-        modal.querySelectorAll('.sp-input').forEach(el => {
-          const k = el.dataset.key;
-          if (!el.value.trim() && merged[k]) {
-            el.value = merged[k];
-            el.style.background = '#fffbe6'; // highlight newly filled fields
+        if (!modal.classList.contains('show')) return;
+        patchAll(mergeFields(apiResults, name));
+        apiResults.filter(r => r.ok && r.text && r.text.length > 80)
+                  .forEach(r => enrichTexts.push({ source: r.id, text: r.text }));
+
+        // ── Phase 2: Targeted web search + scrape ────────────────────────────
+        setPhase('Searching the web for details…');
+        const searchQ = facilityType === 'vessel'
+          ? `"${name}" vessel ship IMO flag operator gross tonnage`
+          : facilityType === 'mill'
+            ? `"${name}" fishmeal processing plant capacity species country`
+            : `"${name}" fish farm aquaculture species capacity production country`;
+
+        const searchEngines = [
+          `https://html.duckduckgo.com/html/?q=${encodeURIComponent(searchQ)}`,
+          `https://www.bing.com/search?q=${encodeURIComponent(searchQ)}`,
+        ];
+
+        const scrapedURLs = new Set();
+        for (const engine of searchEngines) {
+          if (signal.aborted || !modal.classList.contains('show')) break;
+          try {
+            const html = await pfetch(engine, signal);
+            const found = (html.match(/href="(https?:\/\/(?!(?:duckduckgo|bing|microsoft)\.com)[^"]{12,300})"/g) || [])
+              .map(m => m.slice(6, -1)).filter(isValidURL);
+            for (const u of found) { if (scrapedURLs.size < 8) scrapedURLs.add(u); }
+          } catch(e) { if (e.name === 'AbortError') throw e; }
+        }
+
+        let webHits = 0;
+        for (const url of scrapedURLs) {
+          if (signal.aborted || !modal.classList.contains('show')) break;
+          try {
+            const html  = await pfetch(url, signal);
+            const doc   = mkDoc(html);
+            let   text  = doc.body?.innerText?.slice(0, 8000) || '';
+            if (relevanceScore(text, name) === 0) continue;
+            const fields = filterFieldsByType(extractFields(doc, text), facilityType);
+            const fc = Object.keys(fields).filter(k => !k.startsWith('_')).length;
+            if (fc >= 1) {
+              patchAll(mergeFields([{ id: new URL(url).hostname, ok: true, fields, text }], name));
+              enrichTexts.push({ source: new URL(url).hostname, text });
+              webHits++;
+            }
+          } catch(e) { if (e.name === 'AbortError') throw e; }
+        }
+
+        if (!modal.classList.contains('show')) return;
+
+        // ── Phase 3: Claude extraction + description ─────────────────────────
+        const claudeKey = await getClaudeKey();
+        if (claudeKey && enrichTexts.length >= 1) {
+          setPhase('AI extracting fields…');
+          const claudeFields = await claudeExtract(enrichTexts, name, facilityType).catch(() => ({}));
+          if (!modal.classList.contains('show')) return;
+          for (const [k, v] of Object.entries(claudeFields)) { if (v) patchField(k, v); }
+
+          // Polish / generate description with everything we now know
+          const allData = currentData();
+          const filledCount = Object.keys(allData).filter(k => !k.startsWith('_')).length;
+          if (filledCount >= 3) {
+            setPhase('Writing description…');
+            const desc = await claudePolishDescription(allData, name, facilityType).catch(() => null);
+            if (desc && modal.classList.contains('show')) patchField('description', desc);
           }
-        });
-      } catch {}
+        }
+      } catch(e) {
+        if (e.name !== 'AbortError') console.warn('[Enrich]', e);
+      }
+
       enrichAC = null;
       const banner = document.getElementById('sp-enrich-banner');
-      if (banner) banner.remove();
+      if (banner) {
+        banner.innerHTML = '✓ Done';
+        banner.style.color = '#2a7a2a';
+        setTimeout(() => banner?.remove(), 1800);
+      }
     })();
   }
 }
