@@ -66,11 +66,15 @@ function validateFieldValue(key, val) {
   switch (key) {
     case 'latitude': {
       const n = parseFloat(v.replace(/[°NS ]/gi,''));
-      return (!isNaN(n) && n >= -90 && n <= 90) ? String(n) : '';
+      // Reject 0 — equator is never a real farm/vessel location in context
+      if (isNaN(n) || n < -90 || n > 90 || n === 0) return '';
+      return String(n);
     }
     case 'longitude': {
       const n = parseFloat(v.replace(/[°EW ]/gi,''));
-      return (!isNaN(n) && n >= -180 && n <= 180) ? String(n) : '';
+      // Reject 0 — prime meridian is almost never a real aquaculture location
+      if (isNaN(n) || n < -180 || n > 180 || n === 0) return '';
+      return String(n);
     }
     case 'year_built': {
       const m = v.match(/\b(1[89]\d{2}|20[0-2]\d)\b/);
@@ -281,7 +285,7 @@ const PROXIES = [
 // Proxy health: tracks consecutive failures — skip proxies that consistently fail
 // Persisted across sessions so bad proxies aren't retried on every reload
 const proxyFails = new Map();
-const PROXY_MAX_FAILS = 4;
+const PROXY_MAX_FAILS = 2; // mark proxy dead after 2 failures in this session
 try {
   const pf = JSON.parse(localStorage.getItem('ship_pfails1') || '{}');
   Object.entries(pf).forEach(([k,v]) => { if (v > 0) proxyFails.set(k, v); });
@@ -823,7 +827,7 @@ async function pfetch(url, signal) {
   // Rate limit per domain
   try { await rateLimit(new URL(url).hostname, 400); } catch {}
 
-  const MAX_RETRIES = 2;
+  const MAX_RETRIES = 1; // one attempt per proxy — fail fast and move on
   let lastErr;
   let attempt = 0;
 
@@ -857,7 +861,7 @@ async function pfetch(url, signal) {
         const ref = randRef();
 
         const resp = await fetch(proxy + encodeURIComponent(bustUrl), {
-          signal: signal ?? AbortSignal.timeout(10000),
+          signal: signal ?? AbortSignal.timeout(5000), // 5 s hard cap per proxy attempt
           headers: {
             'X-Requested-With': 'XMLHttpRequest',
             'User-Agent':       ua,
