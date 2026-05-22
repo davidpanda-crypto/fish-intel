@@ -12,9 +12,9 @@
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
 <!-- App modules: IDB adapter, hash router, TTL cache — load before app.js -->
-<script src="js/modules/idb.js?v=14"></script>
-<script src="js/modules/router.js?v=14"></script>
-<script src="js/modules/cache.js?v=14"></script>
+<script src="js/modules/idb.js?v=15"></script>
+<script src="js/modules/router.js?v=15"></script>
+<script src="js/modules/cache.js?v=15"></script>
 
 <!-- pdf.js · xlsx · mammoth are lazy-loaded on first file upload (see app.js) -->
 
@@ -22,7 +22,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Libre+Franklin:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
 <!-- App styles -->
-<link rel="stylesheet" href="css/style.css?v=14">
+<link rel="stylesheet" href="css/style.css?v=15">
 </head>
 <body>
 
@@ -212,7 +212,9 @@
     <!-- UPLOAD FILE mode -->
     <div class="mode-body" id="mode-file" role="tabpanel" aria-labelledby="mbtn-file" hidden>
       <div class="upload-hint">Drop any document and the bot extracts every useful field — names, locations, species, capacities, certifications, and more.</div>
-      <div class="dropzone" id="dz" onclick="document.getElementById('fi').click()"
+      <div class="dropzone" id="dz" role="button" tabindex="0" aria-label="File upload area — click or drop a file"
+           onclick="document.getElementById('fi').click()"
+           onkeydown="if(event.key==='Enter'||event.key===' ')document.getElementById('fi').click()"
            ondragover="dzOver(event)" ondragleave="dzLeave()" ondrop="dzDrop(event)">
         <div class="dz-icon">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
@@ -344,6 +346,6 @@
 </div><!-- /app -->
 
 <!-- App logic -->
-<script src="js/app.js?v=14"></script>
+<script src="js/app.js?v=15"></script>
 </body>
 </html>

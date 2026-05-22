@@ -325,6 +325,7 @@ function randUA()  { return UA_POOL[Math.floor(Math.random() * UA_POOL.length)];
 function randRef() { return REFERERS[Math.floor(Math.random() * REFERERS.length)]; }
 function jitter(ms) { return new Promise(r => setTimeout(r, ms + Math.random() * ms)); }
 
+const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB
 let stats    = { searches:0, ships:0, images:0 };
 let saved    = [];
 let bulkRes  = [];
@@ -872,7 +873,7 @@ async function fetchViaProxy(url, signal) {
 
         // Cache-bust on retries so proxy doesn't serve cached blocked response
         const bustUrl = retry > 0
-          ? url + (url.includes('?') ? '&' : '?') + '_cb=' + Date.now()
+          ? url + (url.includes('?') ? (url.endsWith('?') ? '' : '&') : '?') + '_cb=' + Date.now()
           : url;
 
         const ua  = randUA();
@@ -1006,12 +1007,9 @@ async function translate(text, signal) {
   if (!text?.trim()) return text;
   const chunks = [];
   for (let i = 0; i < text.length; i += 450) chunks.push(text.slice(i, i + 450));
-  const out = [];
-  for (const c of chunks) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    out.push(await translateChunk(c, signal));
-  }
-  return out.join(' ');
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  const results = await Promise.all(chunks.map(c => translateChunk(c, signal)));
+  return results.join(' ');
 }
 
 
@@ -1955,7 +1953,6 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
       <div class="text-view">${highlightIMO(s.text)}</div>
     </div>`).join('');
 
-  const savePayload = esc(JSON.stringify({name, imo, ...info}));
   return `
   <hr>
   <div class="vessel-card" id="${uid}">
@@ -1970,7 +1967,7 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
     ${noteText}
     ${scrapeHTML}
     <div class="btn-row">
-      ${savedId ? savedActions : `<button class="btn btn-ghost btn-sm" id="savebtn-${uid}" onclick='showSavePreview(${savePayload},"savebtn-${uid}")'>Save</button>`}
+      ${savedId ? savedActions : `<button class="btn btn-ghost btn-sm" id="savebtn-${uid}" data-info="${esc(JSON.stringify({name, imo, ...info}))}" onclick="showSavePreview(JSON.parse(this.dataset.info),this.id)">Save</button>`}
       <button class="btn btn-ghost btn-sm" onclick="toggleEl('raw-${uid}')">Raw data</button>
       <button class="btn btn-ghost btn-sm" onclick="copyText('${uid}')">Copy text</button>
       ${imo ? `<button class="btn btn-blue btn-sm" onclick="document.getElementById('main-search').value='${safeIMO}';runBot()">Re-scan</button>` : ''}
@@ -2221,7 +2218,7 @@ async function runBot() {
         scrapeResults.filter(r => r.ok).flatMap(r => Object.keys(r.fields||{}).filter(k => !k.startsWith('_')))
       ).size;
       if (unique >= FIELD_THRESHOLD) {
-        log(`⚡ ${unique} fields found — stopping remaining sources early`, 'ok');
+        log(`${unique} fields found — stopping remaining sources early`, 'ok');
         exitAC.abort();
       }
     }
@@ -2446,16 +2443,13 @@ async function runBot() {
       log('Applying AI field extraction…', 'info');
       setProgress(92);
       const claudeFields = await claudePromise.catch(() => ({}));
-      const aiFieldCount = Object.keys(claudeFields).filter(k => claudeFields[k]).length;
-      if (aiFieldCount > 0) {
-        // Claude wins on conflicts — it has read full context, not just regex patterns
-        Object.entries(claudeFields).forEach(([k, v]) => {
-          if (v && v !== '') merged[k] = v;
-        });
-        // Polish: replace/generate description via Claude if we have enough data
+      // Guard: user may have cancelled while Claude was running
+      if (!signal.aborted && Object.keys(claudeFields).filter(k => claudeFields[k]).length > 0) {
+        const aiFieldCount = Object.keys(claudeFields).filter(k => claudeFields[k]).length;
+        Object.entries(claudeFields).forEach(([k, v]) => { if (v && v !== '') merged[k] = v; });
         if (Object.keys(merged).filter(k => !k.startsWith('_')).length >= 4) {
           const desc = await claudePolishDescription(merged, q, searchType).catch(() => null);
-          if (desc) merged.description = desc;
+          if (!signal.aborted && desc) merged.description = desc;
         }
         log(`AI verified ${aiFieldCount} field(s)`, 'ok');
         aiEnhanced = true;
@@ -2535,12 +2529,12 @@ async function queryFarmAPIs(q, signal, yearTo = 2020) {
           ` way["name"~"${safeQ}","i"][~"^(landuse|aquaculture|craft|industrial)$"~"aquaculture","i"];` +
           ` node["name"~"${safeQ}","i"]["man_made"="fish_pass"];` +
           ` node["name"~"${safeQ}","i"]["water"="fish_farm"];)`;
-      const overpassQuery = `[out:json][timeout:25];${nameClause};out center 20;`;
+      const overpassQuery = `[out:json][timeout:7];${nameClause};out center 20;`;
       const resp = await fetch('https://overpass-api.de/api/interpreter', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'data=' + encodeURIComponent(overpassQuery),
-        signal: AbortSignal.timeout(22000),
+        signal: AbortSignal.timeout(8000),
       });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const data = await resp.json();
@@ -2595,6 +2589,7 @@ async function queryFarmAPIs(q, signal, yearTo = 2020) {
         `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(hit.title)}`,
         { signal: AbortSignal.timeout(10000) }
       );
+      if (!summResp.ok) { log('Wikipedia: summary fetch failed', 'warn'); return null; }
       const s = await summResp.json();
       const fields = {};
       if (s.title)                      fields.farm_name   = cleanField(s.title);
@@ -2761,7 +2756,7 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
       log(`AIS lookup for IMO ${imo}…`, 'info');
       const r = await fetch(
         `https://api.vessel-tracking.net/AIS/Vessel/GetVesselDetailsByIMO?IMONumber=${imo}`,
-        { signal }
+        { signal: timedSignal(signal, 8000) }
       );
       if (!r.ok) return null;
       const d = await r.json();
@@ -2775,7 +2770,7 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
         year_built:    d.YearBuilt    || '',
         _imo:          imo,
       };
-      if (d.MMSI && !mmsi) mmsi = d.MMSI;
+      if (d.MMSI != null && d.MMSI !== '' && !mmsi) mmsi = String(d.MMSI);
       log(`✓ AIS (IMO): ${d.VesselName}`, 'ok');
       return { id:'AIS-Registry', ok:true, url:'', fields:f, imgs:[], text:d.VesselName };
     })() : Promise.resolve(null),
@@ -2786,7 +2781,7 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
       const flagFromMID = midMap[mmsi.slice(0, 3)] || '';
       const r = await fetch(
         `https://api.vessel-tracking.net/AIS/Vessel/GetVesselDetailsByMMSI?MMSI=${mmsi}`,
-        { signal }
+        { signal: timedSignal(signal, 8000) }
       );
       if (r.ok) {
         const d = await r.json();
@@ -2800,7 +2795,7 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
             year_built:    d.YearBuilt    || '',
             _imo:          d.IMO          || '',
           };
-          if (d.IMO && !imo) imo = d.IMO;
+          if (d.IMO != null && d.IMO !== '' && !imo) imo = String(d.IMO);
           log(`✓ AIS (MMSI): ${d.VesselName}`, 'ok');
           return { id:'AIS-Registry', ok:true, url:'', fields:f, imgs:[], text:d.VesselName };
         }
@@ -3305,7 +3300,7 @@ function clearFileSelection() {
 
 async function handleFileRaw(file) {
   // Validate file size (max 25MB)
-  if (file.size > 25 * 1024 * 1024) { toast('File too large (max 25MB)'); return; }
+  if (file.size > MAX_FILE_BYTES) { toast('File too large (max 25MB)'); return; }
 
   const out = document.getElementById('file-out');
   out.innerHTML = `<div class="status s-info"><span class="spin"></span> Reading ${esc(file.name)}…</div>`;
@@ -4107,8 +4102,9 @@ async function persistLearned() {
 
 async function saveProxyHealth() {
   try {
+    // Save all known proxies including zeros so recovered proxies overwrite stale fail counts
     const pf = {};
-    proxyFails.forEach((v, k) => { if (v > 0) pf[k] = v; });
+    PROXIES.forEach(p => pf[p] = proxyFails.get(p) || 0);
     if (window.AppIDB) {
       await AppIDB.put('knowledge', { key: 'pfails', data: pf });
     } else {
@@ -4230,31 +4226,6 @@ function dlBlob(content, fn, mime) {
   a.href=url; a.download=fn; a.click();
   setTimeout(()=>URL.revokeObjectURL(url), 5000);
   toast('Downloaded ' + fn);
-}
-
-/* ═══════════════════════════════════════════
-   UI HELPERS
-═══════════════════════════════════════════ */
-function buildIMOBadges(imos) {
-  const wrap = document.createElement('div');
-  wrap.className = 'imo-list';
-  if (!imos.length) {
-    wrap.innerHTML = '<div style="color:var(--mut2);font-size:12px">No IMO numbers found.</div>';
-    return wrap;
-  }
-  imos.forEach(imo => {
-    const badge = document.createElement('button');
-    badge.type = 'button';
-    badge.className = 'imo-badge';
-    badge.onclick = () => { document.getElementById('main-search').value = imo; runBot(); };
-    badge.textContent = 'IMO ' + imo;
-    const go = document.createElement('span');
-    go.className = 'imo-go';
-    go.textContent = 'Search →';
-    badge.appendChild(go);
-    wrap.appendChild(badge);
-  });
-  return wrap;
 }
 
 let _tt = null;
