@@ -398,6 +398,8 @@ async function loadPersistedData() {
       // IDB empty — check localStorage fallback
       try { saved = JSON.parse(localStorage.getItem('ship_saved3') || '[]'); } catch {}
     }
+    // Ensure every record has id (IDB keyPath) — backfill from _id for old records
+    saved = saved.map(r => (r.id ? r : { ...r, id: r._id }));
 
     // Load knowledge base from IDB
     const kEntry = window.AppIDB ? await AppIDB.get('knowledge', 'learned') : null;
@@ -3831,8 +3833,10 @@ function doSave(info, btnId) {
   const alreadySaved = key && saved.find(s =>
     (s.imo || s._imo || s.farm_name || s.vessel_name || s.name || '') === key);
   if (alreadySaved) { toast('Already saved'); return; }
+  const rid = Date.now().toString(36) + Math.random().toString(36).slice(2);
   const record = {
-    _id: Date.now() + Math.random().toString(36).slice(2),
+    id:  rid,
+    _id: rid,
     _savedAt: new Date().toISOString(),
     _notes: '',
     _verified: false,
