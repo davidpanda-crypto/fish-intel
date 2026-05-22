@@ -334,6 +334,7 @@ let pendingFile  = null;  // File selected but not yet extracted
 let logEl    = null;
 let currentAC = null;   // AbortController for active search
 let enrichAC  = null;   // AbortController for modal enrichment
+let fileRawAC = null;   // AbortController for handleFileRaw web enrichment
 let isRunning = false;  // Lock: prevent double-submit
 
 // Knowledge base: persistent learning across sessions
@@ -2535,7 +2536,7 @@ async function queryFarmAPIs(q, signal, yearTo = 2020) {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'data=' + encodeURIComponent(overpassQuery),
-        signal: AbortSignal.timeout(8000),
+        signal: timedSignal(signal, 8000),
       });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const data = await resp.json();
@@ -2675,7 +2676,7 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
       log('Wikipedia: searching for vessel…', 'info');
       const searchResp = await fetch(
         `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(safeQ + ' ship vessel')}&srlimit=3&format=json&origin=*`,
-        { signal }
+        { signal: timedSignal(signal, 10000) }
       );
       if (!searchResp.ok) return [];
       const searchData = await searchResp.json();
@@ -2684,7 +2685,7 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
       for (const p of pages.slice(0, 2)) {
         const summResp = await fetch(
           `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(p.title)}`,
-          { signal }
+          { signal: timedSignal(signal, 10000) }
         );
         if (!summResp.ok) continue;
         const summ = await summResp.json();
@@ -3407,7 +3408,9 @@ async function handleFileRaw(file) {
     webOut.innerHTML = `<div class="status s-info"><span class="spin"></span> Searching web for ${entityNames.length} entity(ies) found in file…</div>`;
     const yearTo = parseInt(document.getElementById('year-to')?.value || String(new Date().getFullYear()));
     const catFilter = document.getElementById('cat-filter')?.value || '';
-    const ac = new AbortController();
+    if (fileRawAC) fileRawAC.abort();
+    fileRawAC = new AbortController();
+    const ac = fileRawAC;
 
     (async () => {
       let cardCount = 0;
@@ -3449,6 +3452,7 @@ async function handleFileRaw(file) {
       if (cardCount === 0 && !ac.signal.aborted) {
         webOut.innerHTML = '<div class="status s-warn">No web results found. Try a more specific entity name in the file.</div>';
       }
+      if (fileRawAC === ac) fileRawAC = null;
     })();
   } else {
     webOut.innerHTML = '<div class="status s-warn">No entity names detected in file — upload a document that mentions a specific farm, mill, or vessel name.</div>';
@@ -4201,7 +4205,7 @@ function renderKnowledge() {
       <td style="text-align:center">${fCount}</td>
       <td><div style="display:flex;align-items:center;gap:6px"><div class="know-bar"><div class="${fillCls}" style="width:${confPct}%"></div></div><span style="font-size:11px;color:var(--mut2)">${confPct}%</span></div></td>
       <td style="color:var(--mut2);font-size:11px;white-space:nowrap">${esc(ageStr)}</td>
-      <td><button class="btn-exp" onclick="setMode('search');document.getElementById('main-search').value=${JSON.stringify(display)};document.getElementById('main-search').focus()">Re-search</button></td>
+      <td><button class="btn-exp btn-resrch" data-resrch="${esc(display)}">Re-search</button></td>
     </tr>`;
   }).join('');
 
@@ -4235,6 +4239,15 @@ function renderKnowledge() {
       <thead><tr><th>Domain</th><th>Hits</th><th>Successes</th><th>Success rate</th><th>Avg fields/hit</th></tr></thead>
       <tbody>${domainRows}</tbody>
     </table></div>` : ''}`;
+
+  // Event delegation for Re-search buttons (avoids inline JSON.stringify in onclick)
+  el.onclick = e => {
+    const btn = e.target.closest('.btn-resrch');
+    if (!btn) return;
+    setMode('search');
+    document.getElementById('main-search').value = btn.dataset.resrch;
+    document.getElementById('main-search').focus();
+  };
 }
 
 function exportCSV(data, fn) {
