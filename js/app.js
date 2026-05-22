@@ -1947,9 +1947,9 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
 
   // Image gallery — hidden until loaded to prevent broken-image flash
   const imgHTML = imgs.length ? imgs.map(img =>
-    `<div class="iw" style="display:none" onclick="openLightbox('${encodeURIComponent(img.src)}','${encodeURIComponent(img.label)}')">
-      <img src="${esc(img.src)}" alt="${esc(img.label)}" loading="lazy"
-           onload="this.parentElement.style.display=''"
+    `<div class="iw iw-loading" onclick="openLightbox('${encodeURIComponent(img.src)}','${encodeURIComponent(img.label)}')">
+      <img src="${esc(img.src)}" alt="${esc(img.label)}"
+           onload="this.parentElement.classList.remove('iw-loading')"
            onerror="this.parentElement.remove()">
       <div class="isrc">${esc(img.label)}</div>
     </div>`).join('') : '';
