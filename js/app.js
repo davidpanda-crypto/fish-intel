@@ -557,9 +557,19 @@ function setMode(mode) {
   const body = document.getElementById('mode-' + mode);
   const btn  = document.getElementById('mbtn-' + mode);
   if (body) body.hidden = false;
-  if (btn)  { btn.classList.add('active'); btn.setAttribute('aria-selected', 'true'); }
+  if (btn)  {
+    btn.classList.add('active');
+    btn.setAttribute('aria-selected', 'true');
+    btn.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+  }
   // Clear route when switching away from search
   if (mode !== 'search' && window.AppRouter) AppRouter.clear();
+}
+
+function fillSearch(q) {
+  const input = document.getElementById('main-search');
+  if (input) { input.value = q; input.focus(); }
+  runBot();
 }
 
 /* ═══════════════════════════════════════════════════════════════════

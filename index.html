@@ -12,9 +12,9 @@
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
 <!-- App modules: IDB adapter, hash router, TTL cache — load before app.js -->
-<script src="js/modules/idb.js?v=15"></script>
-<script src="js/modules/router.js?v=15"></script>
-<script src="js/modules/cache.js?v=15"></script>
+<script src="js/modules/idb.js?v=17"></script>
+<script src="js/modules/router.js?v=17"></script>
+<script src="js/modules/cache.js?v=17"></script>
 
 <!-- pdf.js · xlsx · mammoth are lazy-loaded on first file upload (see app.js) -->
 
@@ -22,7 +22,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Libre+Franklin:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
 <!-- App styles -->
-<link rel="stylesheet" href="css/style.css?v=15">
+<link rel="stylesheet" href="css/style.css?v=17">
 </head>
 <body>
 
@@ -117,12 +117,14 @@
   <div class="tool-panel">
 
     <!-- Mode tabs -->
+    <div class="tab-wrap">
     <div class="mode-strip" role="tablist" aria-label="Input mode">
       <button class="mode-btn active" id="mbtn-search" role="tab" aria-selected="true"  aria-controls="mode-search" onclick="setMode('search')">Search by Name</button>
       <button class="mode-btn" id="mbtn-url"    role="tab" aria-selected="false" aria-controls="mode-url"    onclick="setMode('url')">Scrape URL</button>
       <button class="mode-btn" id="mbtn-file"   role="tab" aria-selected="false" aria-controls="mode-file"   onclick="setMode('file')">Upload File</button>
       <button class="mode-btn" id="mbtn-text"   role="tab" aria-selected="false" aria-controls="mode-text"   onclick="setMode('text')">Paste Text</button>
       <button class="mode-btn" id="mbtn-bulk"   role="tab" aria-selected="false" aria-controls="mode-bulk"   onclick="setMode('bulk')">Bulk Lookup</button>
+    </div>
     </div>
 
     <!-- SEARCH mode -->
@@ -160,7 +162,7 @@
         <button id="search-btn" class="search-go" onclick="runBot()">Search</button>
         <button class="btn-cancel" id="cancel-btn" onclick="cancelSearch()">✕ Cancel</button>
       </div>
-      <p class="search-tip">Try: <strong>"Mowi ASA"</strong> · <strong>"Leroy Seafood"</strong> · <strong>"Atlantic Dawn"</strong> · or a 7-digit IMO number</p>
+      <p class="search-tip">Try: <button class="search-sug" onclick="fillSearch('Mowi ASA')">"Mowi ASA"</button> · <button class="search-sug" onclick="fillSearch('Leroy Seafood')">"Leroy Seafood"</button> · <button class="search-sug" onclick="fillSearch('Atlantic Dawn')">"Atlantic Dawn"</button> · or a 7-digit IMO number</p>
     </div>
 
     <!-- SCRAPE URL mode -->
@@ -346,6 +348,6 @@
 </div><!-- /app -->
 
 <!-- App logic -->
-<script src="js/app.js?v=15"></script>
+<script src="js/app.js?v=17"></script>
 </body>
 </html>
