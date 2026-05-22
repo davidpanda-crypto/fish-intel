@@ -96,8 +96,13 @@ function validateFieldValue(key, val) {
       return (!isNaN(n) && n > 0.5 && n < 10) ? String(n) : '';
     }
     case 'description': {
-      // Must be at least 30 chars to be meaningful
-      return v.length >= 30 ? v.slice(0, 1200) : '';
+      if (v.length < 30) return '';
+      // Reject generic site/platform meta descriptions and navigation boilerplate
+      if (/^(search |find |explore |browse |home |menu |log.?in |sign.?in |register |subscribe |welcome to |this (site|website|page|portal) |we (are|provide|offer|specialize) |our (platform|service|database|website) )/i.test(v.trim())) return '';
+      if (/(cookie policy|privacy policy|terms of (use|service)|all rights reserved|javascript (is |must be )|please enable)/i.test(v) && v.length < 300) return '';
+      // Reject descriptions that are clearly about a tracking/listing platform, not the entity
+      if (/\b(ships?|vessels?|farms?|companies?)\s+(tracked|listed|online|in (our|the) database|registered)/i.test(v) && !/\b(named|called|known as)\b/i.test(v)) return '';
+      return v.slice(0, 1200);
     }
     case 'species': case 'input_species': {
       // Reject UI / nav boilerplate that leaks through scraping
@@ -791,14 +796,21 @@ async function claudePolishDescription(merged, query, searchType, signal = null)
   const existingDesc = merged.description || '';
 
   const system = `You are an investigative journalist writing for a seafood industry intelligence platform.
-Write a thorough, factual profile paragraph about the entity using ONLY the data provided — never invent facts.
-Cover: what the entity is and does, its location and scale, species or vessel type, production method, capacity, certifications, and any other significant facts present in the data.
-Write in plain, direct English. No marketing language. No fluff. Active voice preferred.
-If the provided data is sparse, write a shorter accurate paragraph rather than padding with guesses.
-Return ONLY the description paragraph — no JSON, no quotes, no label, no heading.`;
+Write a factual profile paragraph about the specific entity "${query}" using ONLY the structured data provided.
+
+Rules — follow strictly:
+• Write ONLY about "${query}" itself — not about any website, database, or platform that provided the data.
+• Do NOT mention MarineTraffic, VesselFinder, Wikipedia, SeafoodSource, or any other data source.
+• If the existing description is about a website or service rather than "${query}", ignore it entirely.
+• Never invent, infer, or hallucinate facts not explicitly present in the structured data.
+• Cover: what the entity is and does, location and scale, species or vessel type, capacity, certifications, ownership.
+• If data is sparse, write a short accurate paragraph — do not pad with guesses.
+• Write in plain direct English. No marketing language. Active voice preferred.
+• Return ONLY the description paragraph — no JSON, no quotes, no label, no heading.
+• If you cannot write a meaningful description specifically about "${query}" from the provided data, return an empty string.`;
 
   const user = `Entity: "${query}" (${searchType})
-${existingDesc ? `Existing description to improve:\n${existingDesc}\n\n` : ''}Structured data:\n${fields || '(none)'}`;
+${existingDesc && isEntityDescription(existingDesc, query) ? `Existing description to improve:\n${existingDesc}\n\n` : ''}Structured data:\n${fields || '(none)'}`;
 
   try {
     const desc = await callClaude(system, user, 600, signal);
@@ -1720,6 +1732,19 @@ function sourceRank(id) {
   return i >= 0 ? i : 0;
 }
 
+// Returns true if a description is actually about the searched entity —
+// not a generic website description or platform boilerplate.
+function isEntityDescription(text, query) {
+  if (!text || text.length < 30) return false;
+  if (!query) return true;
+  // At least one meaningful word from the query must appear in the description
+  const stopWords = /^(the|and|for|of|in|a|an|is|are|by|at|on|with|asa|ltd|inc|llc|co|bv|nv|sa|ab|as|plc)$/i;
+  const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2 && !stopWords.test(t));
+  if (terms.length === 0) return true;
+  const tl = text.toLowerCase();
+  return terms.some(t => tl.includes(t));
+}
+
 function mergeFields(results, query) {
   // Sort results: higher-ranked sources first, then by relevance to query
   const ranked = [...results]
@@ -1753,6 +1778,12 @@ function mergeFields(results, query) {
       const h = r.fields?._heading;
       if (h && h.length > 2 && h.length < 80) { m.vessel_name = h; break; }
     }
+  }
+
+  // Reject description if it doesn't actually mention the searched entity
+  // (catches generic website meta descriptions and wrong Wikipedia articles)
+  if (m.description && !isEntityDescription(m.description, query)) {
+    delete m.description;
   }
 
   // Standardize, deduplicate, and trim all merged field values
@@ -2619,7 +2650,10 @@ async function queryFarmAPIs(q, signal, yearTo = 2020) {
       const s = await summResp.json();
       const fields = {};
       if (s.title)                      fields.farm_name   = cleanField(s.title);
-      if (s.extract)                    fields.description = clipToYear(cleanField(s.extract), yearTo).slice(0, 1200);
+      // Only use Wikipedia extract as description if the article title matches the entity
+      if (s.extract && isEntityDescription(s.title || s.extract, q)) {
+        fields.description = clipToYear(cleanField(s.extract), yearTo).slice(0, 1200);
+      }
       if (s.coordinates?.lat != null)   fields.latitude    = String(s.coordinates.lat);
       if (s.coordinates?.lon != null)   fields.longitude   = String(s.coordinates.lon);
       const imgs = (s.thumbnail?.source && isValidURL(s.thumbnail.source))
@@ -2713,7 +2747,7 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
         );
         if (!summResp.ok) continue;
         const summ = await summResp.json();
-        if (summ.extract) {
+        if (summ.extract && isEntityDescription(summ.title || summ.extract, safeQ)) {
           const f = {};
           f.description = summ.extract.slice(0, 1200);
           if (summ.title)       f.vessel_name = summ.title;
