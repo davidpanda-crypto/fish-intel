@@ -1027,56 +1027,79 @@ function extractImages(doc, baseURL) {
     try {
       const abs = new URL(src, baseURL || 'https://x.com').href;
       if (!isValidURL(abs) || seen.has(abs)) return;
-      // Skip common noise: icons, logos, tracking pixels, spinners
-      if (/\/(icon|logo|sprite|pixel|avatar|placeholder|blank|loading|spinner|arrow|badge|star|rating|flag)[^/]*\.(png|gif|svg|webp)/i.test(abs)) return;
-      if (/\.(svg|ico)$/i.test(abs) && !abs.includes('farm') && !abs.includes('vessel')) return;
+      // Reject tracking pixels, UI chrome, and decorative assets
+      if (/\/(?:icon|logo|sprite|pixel|avatar|placeholder|blank|loading|spinner|arrow|badge|star|rating|flag)\b[^/]*\.(?:png|gif|svg|webp)/i.test(abs)) return;
+      if (/\/(?:beacon|track|pixel)\.(?:gif|png)|\b1x1\b|\bspacer\b/i.test(abs)) return;
+      if (/\.(?:svg|ico)$/i.test(abs)) return;
       seen.add(abs);
       imgs.push({ src: abs, label: cleanField(label) || 'Photo' });
     } catch {}
   };
 
-  // og:image / twitter:image — highest quality editorial images
+  const sizeOk = img => {
+    // Only reject images with explicitly declared small dimensions.
+    // Absent dimensions mean lazy-loaded — let them through.
+    const w = img.getAttribute('width');
+    const h = img.getAttribute('height');
+    if (w && !isNaN(parseInt(w)) && parseInt(w) < 80) return false;
+    if (h && !isNaN(parseInt(h)) && parseInt(h) < 50) return false;
+    return true;
+  };
+
+  // og:image / twitter:image — highest-quality editorial image
   const og = doc.querySelector('meta[property="og:image"],meta[property="og:image:url"]');
   if (og?.content) add(og.content, 'Primary photo');
   const tw = doc.querySelector('meta[name="twitter:image"],meta[name="twitter:image:src"]');
   if (tw?.content) add(tw.content, 'Social card');
 
-  // JSON-LD image
+  // JSON-LD image — supports arrays and nested image objects
   doc.querySelectorAll('script[type="application/ld+json"]').forEach(s => {
     try {
-      const d = JSON.parse(s.textContent);
-      const img = d.image?.url || d.image?.[0]?.url || d.image;
-      if (typeof img === 'string') add(img, d.name || 'Photo');
+      const items = [].concat(JSON.parse(s.textContent));
+      items.forEach(d => {
+        const url = d.image?.url || d.image?.[0]?.url || (typeof d.image === 'string' ? d.image : null);
+        if (url) add(url, d.name || 'Photo');
+      });
     } catch {}
   });
 
-  // <img> tags — try all lazy-load attribute variants
-  doc.querySelectorAll('img').forEach(img => {
+  const processImg = img => {
+    if (!sizeOk(img)) return;
+    // Prefer lazy-load attributes over the placeholder src
     const src =
-      img.getAttribute('src') ||
       img.getAttribute('data-src') ||
       img.getAttribute('data-lazy') ||
+      img.getAttribute('data-lazy-src') ||
       img.getAttribute('data-original') ||
       img.getAttribute('data-img') ||
       img.getAttribute('data-full') ||
       img.getAttribute('data-zoom-src') ||
-      img.getAttribute('data-hi-res-src') || '';
+      img.getAttribute('data-hi-res-src') ||
+      img.getAttribute('src') || '';
 
-    // Also check srcset — pick largest candidate
-    const ss = img.getAttribute('srcset') || '';
+    // Srcset — pick highest-resolution candidate
+    const ss = img.getAttribute('srcset') || img.getAttribute('data-srcset') || '';
     if (ss) {
       const best = ss.split(',')
-        .map(s => s.trim().split(/\s+/))
-        .filter(p => p.length >= 1)
-        .sort((a, b) => parseFloat(b[1]) - parseFloat(a[1]))[0];
-      if (best?.[0]) add(best[0], img.alt || 'Photo');
+        .map(e => { const p = e.trim().split(/\s+/); return { url: p[0], w: parseFloat(p[1]) || 0 }; })
+        .sort((a, b) => b.w - a.w)[0];
+      if (best?.url) add(best.url, img.alt || 'Photo');
     }
 
-    if (!src) return;
-    const w = parseInt(img.getAttribute('width')  || img.style?.width  || '200');
-    const h = parseInt(img.getAttribute('height') || img.style?.height || '200');
-    if (w < 80 || h < 50) return;
-    add(src, img.alt || img.title || 'Photo');
+    if (src && !src.startsWith('data:')) add(src, img.alt || img.title || 'Photo');
+  };
+
+  doc.querySelectorAll('img').forEach(processImg);
+
+  // noscript fallbacks — lazy-loading sites often place the real <img> inside <noscript>
+  doc.querySelectorAll('noscript').forEach(ns => {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = ns.textContent || '';
+    tmp.querySelectorAll('img[src]').forEach(img => {
+      if (!sizeOk(img)) return;
+      const src = img.getAttribute('src') || '';
+      if (src && !src.startsWith('data:')) add(src, img.alt || 'Photo');
+    });
   });
 
   // <picture> sources
@@ -1099,43 +1122,84 @@ function safeAbsURL(src, base) {
 async function fetchBingImages(query, signal) {
   const imgs = [];
   const seen = new Set();
-  const addImg = (url, label) => {
+
+  const addImg = (raw, label) => {
     try {
-      // Unescape JSON unicode and forward-slash escapes
-      const clean = url.replace(/\\u([\da-f]{4})/gi, (_, h) => String.fromCharCode(parseInt(h,16)))
-                       .replace(/\\\//g, '/').split('?')[0];
-      if (isValidURL(clean) && !seen.has(clean)) { seen.add(clean); imgs.push({ src: clean, label }); }
+      const url = raw
+        .replace(/\\u([\da-f]{4})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+        .replace(/\\\//g, '/')
+        .replace(/&amp;/g, '&')
+        .split('?')[0];
+      if (isValidURL(url) && !seen.has(url)) { seen.add(url); imgs.push({ src: url, label }); }
     } catch {}
   };
 
-  // Bing image search — try multiple JSON key patterns Bing uses
   try {
     const html = await fetchViaProxy(
-      `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC2&first=1`,
+      `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC2&first=1&count=20`,
       signal
     );
-    // murl = media URL (direct full image), iurl = image URL
-    for (const m of (html.match(/"murl"\s*:\s*"(https?[^"]{10,500})"/g) || []).slice(0, 10))
-      addImg(m.replace(/^"murl"\s*:\s*"/, '').replace(/"$/, ''), query);
-    for (const m of (html.match(/"iurl"\s*:\s*"(https?[^"]{10,500})"/g) || []).slice(0, 6))
-      addImg(m.replace(/^"iurl"\s*:\s*"/, '').replace(/"$/, ''), query);
-    // Some Bing responses embed URLs as m={"murl":"..."}
-    for (const m of (html.match(/murl%3a(https?[^&"'\s]{10,400})/gi) || []).slice(0, 6))
-      addImg(decodeURIComponent(m.replace(/^murl%3a/i, '')), query);
+
+    // Bing embeds image data in multiple JSON key formats — try all known variants
+    const jsonPatterns = [
+      [/"murl"\s*:\s*"(https?[^"]{10,500})"/g,      s => s.replace(/^"murl"\s*:\s*"/, '').replace(/"$/, '')],
+      [/"MediaUrl"\s*:\s*"(https?[^"]{10,500})"/g,  s => s.replace(/^"MediaUrl"\s*:\s*"/, '').replace(/"$/, '')],
+      [/"imgurl"\s*:\s*"(https?[^"]{10,500})"/g,    s => s.replace(/^"imgurl"\s*:\s*"/, '').replace(/"$/, '')],
+      [/"iurl"\s*:\s*"(https?[^"]{10,500})"/g,      s => s.replace(/^"iurl"\s*:\s*"/, '').replace(/"$/, '')],
+    ];
+    for (const [re, extract] of jsonPatterns) {
+      for (const m of (html.match(re) || []).slice(0, 12)) addImg(extract(m), query);
+      if (imgs.length >= 8) break;
+    }
+
+    // URL-encoded murl in anchor data attributes (alternate Bing encoding)
+    for (const m of (html.match(/murl%3[aA](https?[^&"'\s]{10,400})/g) || []).slice(0, 8))
+      addImg(decodeURIComponent(m.replace(/^murl%3[aA]/i, '')), query);
+
   } catch(e) { if (e.name === 'AbortError') throw e; }
 
-  // DuckDuckGo image search as fallback / supplement
-  if (imgs.length < 3) {
-    try {
-      const html = await fetchViaProxy(
-        `https://duckduckgo.com/?q=${encodeURIComponent(query)}&iax=images&ia=images`,
-        signal
-      );
-      for (const m of (html.match(/"height":\d+,"image":"(https?[^"]{10,500})"/g) || []).slice(0, 8))
-        addImg(m.replace(/^"height":\d+,"image":"/, '').replace(/"$/, ''), query + ' (DDG)');
-    } catch(e) { if (e.name === 'AbortError') throw e; }
-  }
+  return imgs.slice(0, 8);
+}
 
+/**
+ * DuckDuckGo image search via the structured i.js JSON API.
+ * Requires a two-step fetch: first get a vqd session token from the
+ * search page, then use it to call the image API endpoint.
+ */
+async function fetchDDGImages(query, signal) {
+  const imgs = [];
+  const seen = new Set();
+  try {
+    // Step 1: load the image search page to extract the vqd token
+    const pageHtml = await fetchViaProxy(
+      `https://duckduckgo.com/?q=${encodeURIComponent(query)}&iax=images&ia=images`,
+      signal
+    );
+    const vqdMatch = pageHtml.match(/vqd[='":\s]+([\d-]+)/);
+    if (!vqdMatch) return imgs;
+    const vqd = vqdMatch[1];
+
+    // Step 2: call the image JSON API with the token
+    const apiText = await fetchViaProxy(
+      `https://duckduckgo.com/i.js?q=${encodeURIComponent(query)}&o=json&p=1&s=0&u=bing&f=,,,,,&l=us-en&vqd=${vqd}`,
+      signal
+    );
+
+    let data;
+    try { data = JSON.parse(apiText); } catch {
+      // i.js sometimes has a non-JSON prefix or wrapper — extract the object
+      const m = apiText.match(/\{[\s\S]*\}/);
+      if (m) try { data = JSON.parse(m[0]); } catch {}
+    }
+
+    for (const r of (data?.results || []).slice(0, 12)) {
+      const url = r.image;
+      if (url && isValidURL(url) && !seen.has(url)) {
+        seen.add(url);
+        imgs.push({ src: url, label: r.title || query });
+      }
+    }
+  } catch(e) { if (e.name === 'AbortError') throw e; }
   return imgs.slice(0, 8);
 }
 
@@ -1872,11 +1936,12 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
       ${info._category ? `<span>${esc(info._category)}</span>` : ''}
     </div>`;
 
-  // Image gallery HTML (src validated, alt escaped)
+  // Image gallery — hidden until loaded to prevent broken-image flash
   const imgHTML = imgs.length ? imgs.map(img =>
-    `<div class="iw" onclick="openLightbox('${encodeURIComponent(img.src)}','${encodeURIComponent(img.label)}')">
+    `<div class="iw" style="display:none" onclick="openLightbox('${encodeURIComponent(img.src)}','${encodeURIComponent(img.label)}')">
       <img src="${esc(img.src)}" alt="${esc(img.label)}" loading="lazy"
-           onerror="this.parentElement.style.display='none'">
+           onload="this.parentElement.style.display=''"
+           onerror="this.parentElement.remove()">
       <div class="isrc">${esc(img.label)}</div>
     </div>`).join('') : '';
 
@@ -2182,10 +2247,13 @@ async function runBot() {
 
     const imgPromise = document.getElementById('opt-imgs').checked
       ? Promise.all([
-          // Wikipedia images first — direct API, no proxy, always specific to the entity
+          // Wikipedia — direct CORS API, most reliable and entity-specific
           fetchWikipediaImages(q, signal).catch(() => []),
+          // Bing — targeted query for facility/vessel photos
           fetchBingImages(imgQ1, signal).catch(() => []),
-          fetchBingImages(imgQ2, signal).catch(() => []),
+          // DDG — structured JSON API (vqd-token), industry publication query
+          fetchDDGImages(imgQ2, signal).catch(() => []),
+          // Bing — broader visual query for additional angles
           fetchBingImages(imgQ3, signal).catch(() => []),
         ]).then(([wiki, a, b, c]) => [...wiki, ...a, ...b, ...c])
       : Promise.resolve([]);
@@ -2819,11 +2887,16 @@ async function scrapeURL() {
       Object.entries(fields).forEach(([k, v]) => { if (v && !merged[k]) merged[k] = v; });
     });
 
-    // Images from all sources combined
+    // Images from all sources combined — supplement with targeted searches
     let allImgs = successes.flatMap(s => s.imgs);
     const nameQ = merged.vessel_name || merged.farm_name || '';
     if (nameQ && document.getElementById('opt-imgs').checked) {
-      try { allImgs = [...allImgs, ...await fetchBingImages(nameQ, signal)]; } catch {}
+      const [bingImgs, ddgImgs] = await Promise.allSettled([
+        fetchBingImages(nameQ, signal),
+        fetchDDGImages(nameQ, signal),
+      ]);
+      if (bingImgs.status === 'fulfilled') allImgs = [...allImgs, ...bingImgs.value];
+      if (ddgImgs.status  === 'fulfilled') allImgs = [...allImgs, ...ddgImgs.value];
     }
 
     // Translate if enabled (translate the primary source text)
