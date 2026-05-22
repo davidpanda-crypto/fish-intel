@@ -175,17 +175,30 @@ function relevanceScore(text, q) {
   return terms.reduce((n, t) => n + (tl.split(t).length - 1), 0);
 }
 
+// Global domain gate — page must mention at least one sea/maritime/aquaculture term.
+// Prevents hotels, restaurants, and unrelated companies from appearing in results.
+const _SEA_KW = /\b(?:aquaculture|fish(?:ery|eries|meal|oil|ing|farm|pond|cage|hatchery|feed|stock|pass)|seafood|salmon|trout|shrimp|prawn|tilapia|tuna|cod|herring|menhaden|anchoveta|halibut|pollock|mackerel|sea.?bass|seabass|sea.?bream|seabream|oyster|mussel|shellfish|crab|lobster|squid|mollusc|mollusk|bivalve|finfish|pelagic|demersal|mariculture|pisciculture|net.?pen|smolt|broodstock|spawn(?:ing)?|stocking.?density|biomass|fcr\b|asc.?certif|msc.?certif|bap.?certif|global.?salmon|maritime|vessel|trawler|purse.?seiner|factory.?ship|fish.?processing|fish.?factory|feed.?mill|marinetraffic|vesselfinder|fleetmon|equasis|imo\b|mmsi\b|flag.?state|gross.?tonnage|deadweight|port.?of.?registry|call.?sign|nav.?status|fishing.?vessel|cargo.?vessel|bulk.?carrier|tanker)\b/i;
+
+function isSeaRelated(text) {
+  return text ? _SEA_KW.test(text) : false;
+}
+
 // Returns true if page text is topically compatible with the requested search type.
-// Prevents e.g. random vessel pages appearing in farm results and vice-versa.
+// isSeaRelated() is the first gate for ALL types — completely off-domain pages are
+// rejected before the type-specific cross-checks run.
 function topicMatch(text, searchType) {
-  if (!text || !searchType || searchType === 'general') return true;
+  if (!text) return true;
+  if (!isSeaRelated(text)) return false;           // global domain gate
+  if (!searchType || searchType === 'general') return true;
   const tl = text.toLowerCase();
   const FARM_KW   = /aquaculture|fish farm|fish cage|net pen|hatchery|salmon farm|shrimp farm|trout farm|tilapia|sea bass|seabass|bream|fcr|stocking density|harvest cycle|asc certified|bap certified|bap star|certified producer|certified facility|seafood source|global salmon|species farmed/;
   const MILL_KW   = /fishmeal|fish meal|fish oil|fishoil|processing plant|feed mill|reduction plant|feed factory|skretting|biomar|tasa fishmeal|omega-3|marine ingredients|iffo|eumofa|menhaden|anchoveta|reduction|fishmeal content/;
   const VESSEL_KW = /\bimo\b|mmsi|flag state|call sign|gross tonnage|deadweight|port of registry|marinetraffic|vesselfinder|fleetmon|ais|nav status|fishing vessel|cargo vessel|bulk carrier|tanker|container ship|year built|fao global record|ship registry|vessel registry/;
-  if (searchType === 'farm')   return FARM_KW.test(tl)   || !VESSEL_KW.test(tl);
-  if (searchType === 'mill')   return MILL_KW.test(tl)   || !VESSEL_KW.test(tl);
-  if (searchType === 'vessel') return VESSEL_KW.test(tl) || !FARM_KW.test(tl);
+  // Cross-category exclusion: reject if the page is strongly about a different category.
+  // We no longer use "|| !OTHER_KW" — isSeaRelated already ensures sea context.
+  if (searchType === 'farm')   return !VESSEL_KW.test(tl) || FARM_KW.test(tl);
+  if (searchType === 'mill')   return !VESSEL_KW.test(tl) || MILL_KW.test(tl);
+  if (searchType === 'vessel') return VESSEL_KW.test(tl)  || !FARM_KW.test(tl);
   return true;
 }
 
@@ -2302,6 +2315,7 @@ async function runBot() {
               const subLang = detectLang(pd, pt);
               if (subLang !== 'en') { try { pt = await translate(pt.slice(0, 3000), scrapeSignal); } catch {} }
               const rel = relevanceScore(pt, q);
+              if (!isSeaRelated(pt)) { log(`Skipped (not sea-related): ${new URL(u).hostname}`, 'warn'); continue; }
               if (rel === 0 && !s._fallback) { log(`Skipped (off-topic): ${new URL(u).hostname}`, 'warn'); continue; }
               if (!topicMatch(pt, searchType)) { log(`Skipped (wrong topic): ${new URL(u).hostname}`, 'warn'); continue; }
               const pf = filterFieldsByType(extractFields(pd, pt), searchType);
@@ -2325,8 +2339,8 @@ async function runBot() {
         const rel = relevanceScore(text, q);
         const filteredFields = filterFieldsByType(fields, searchType);
         const fc = Object.keys(filteredFields).filter(k=>!k.startsWith('_')).length;
-        if ((rel === 0 && fc < 2 && s._fallback) || !topicMatch(text, searchType)) {
-          log(`Skipped (off-topic): ${s.id}`, 'warn');
+        if (!isSeaRelated(text) || (rel === 0 && fc < 2 && s._fallback) || !topicMatch(text, searchType)) {
+          log(`Skipped (${!isSeaRelated(text) ? 'not sea-related' : 'off-topic'}): ${s.id}`, 'warn');
         } else {
           log(`✓ ${s.id} — ${fc} fields, ${imgs.length} imgs`, 'ok');
           scrapeResults.push({ id:s.id, ok:true, url:s.url, fields:filteredFields, imgs, text });
@@ -3728,6 +3742,7 @@ async function bulkScrapeItem(q, searchType, yearTo, catFilter, signal) {
             if (subLang !== 'en') {
               try { pt = await translate(pt.slice(0, 3000), signal); } catch {}
             }
+            if (!isSeaRelated(pt)) continue;
             if (relevanceScore(pt, q) === 0) continue;
             if (!topicMatch(pt, searchType)) continue;
             const rawPf = extractFields(pd, pt);
