@@ -582,12 +582,6 @@ async function getClaudeModel() {
     return entry?.model || 'claude-3-5-haiku-20241022';
   } catch { return 'claude-3-5-haiku-20241022'; }
 }
-async function saveClaudeSettings(apiKey, model) {
-  try {
-    if (window.AppIDB) await AppIDB.put('knowledge', { key: 'claude-settings', apiKey, model });
-  } catch {}
-}
-
 // ── Settings modal ─────────────────────────────────────────────────────────
 async function openSettings() {
   const modal = document.getElementById('settings-modal');
@@ -650,11 +644,12 @@ async function updateClaudeHeaderDot() {
 }
 
 // ── Core Claude API call ───────────────────────────────────────────────────
-async function callClaude(system, user, maxTokens = 800) {
+async function callClaude(system, user, maxTokens = 800, signal = null) {
   const [key, model] = await Promise.all([getClaudeKey(), getClaudeModel()]);
   if (!key) return null;
   const res = await fetch(CLAUDE_API, {
     method: 'POST',
+    signal: timedSignal(signal, 30000), // 30 s hard cap — API can be slow on long contexts
     headers: {
       'x-api-key': key,
       'anthropic-version': CLAUDE_VER,
@@ -722,7 +717,7 @@ function claudeFieldSchema(searchType) {
 }
 
 // ── Smart extraction: runs concurrently with the scraping loop ────────────
-async function claudeExtract(pageTexts, query, searchType) {
+async function claudeExtract(pageTexts, query, searchType, signal = null) {
   const schema = claudeFieldSchema(searchType);
   const system = [
     `You are a precision data extraction engine for an aquaculture and maritime intelligence platform.`,
@@ -744,7 +739,7 @@ async function claudeExtract(pageTexts, query, searchType) {
   const user = `Entity: "${query}" | Type: ${searchType}\n\nFields to extract (use exact key names):\n${JSON.stringify(schema, null, 2)}\n\nContent:\n${corpus}`;
 
   try {
-    const raw = await callClaude(system, user, 2000);
+    const raw = await callClaude(system, user, 2000, signal);
     if (!raw) return {};
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) return {};
@@ -763,7 +758,7 @@ async function claudeExtract(pageTexts, query, searchType) {
 }
 
 // ── Smart description: investigative journalist polish pass ──────────────────
-async function claudePolishDescription(merged, query, searchType) {
+async function claudePolishDescription(merged, query, searchType, signal = null) {
   const fields = Object.entries(merged)
     .filter(([k, v]) => !k.startsWith('_') && v && k !== 'description')
     .map(([k, v]) => `${k}: ${v}`)
@@ -782,7 +777,7 @@ Return ONLY the description paragraph — no JSON, no quotes, no label, no headi
 ${existingDesc ? `Existing description to improve:\n${existingDesc}\n\n` : ''}Structured data:\n${fields || '(none)'}`;
 
   try {
-    const desc = await callClaude(system, user, 600);
+    const desc = await callClaude(system, user, 600, signal);
     if (!desc) return null;
     const trimmed = desc.trim();
     if (trimmed.length <= 1000) return trimmed;
@@ -848,7 +843,7 @@ async function fetchViaProxy(url, signal) {
   // Rate limit per domain
   try { await rateLimit(new URL(url).hostname, 400); } catch {}
 
-  const MAX_RETRIES = 1; // one attempt per proxy — fail fast and move on
+  const MAX_RETRIES = 2; // 2 attempts per proxy: first try + one retry with backoff
   let lastErr;
   let attempt = 0;
 
@@ -882,7 +877,7 @@ async function fetchViaProxy(url, signal) {
         const ref = randRef();
 
         const resp = await fetch(proxy + encodeURIComponent(bustUrl), {
-          signal: signal ?? AbortSignal.timeout(5000), // 5 s hard cap per proxy attempt
+          signal: timedSignal(signal, 5000), // 5 s hard cap per proxy attempt, always applied
           headers: {
             'X-Requested-With': 'XMLHttpRequest',
             'User-Agent':       ua,
@@ -919,6 +914,7 @@ async function fetchViaProxy(url, signal) {
           throw new Error('Block page detected');
         }
 
+        if (reqCache.size >= 100) reqCache.delete(reqCache.keys().next().value); // evict oldest
         reqCache.set(url, text);
         proxyFails.set(proxy, 0); // reset health on success
         saveProxyHealth();
@@ -944,7 +940,9 @@ async function fetchViaProxy(url, signal) {
 
 function parseHTML(html) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
-  doc.querySelectorAll('script,style,nav,footer,iframe,noscript,form,header,aside,[class*="cookie"],[class*="consent"],[class*="banner"],[class*="popup"],[id*="cookie"],[id*="gdpr"]').forEach(e => e.remove());
+  // noscript is intentionally kept — extractImages reads it for lazy-load fallbacks.
+  // Only executable elements and navigation chrome are stripped here.
+  doc.querySelectorAll('script,style,nav,footer,iframe,form,header,aside,[class*="cookie"],[class*="consent"],[class*="banner"],[class*="popup"],[id*="cookie"],[id*="gdpr"]').forEach(e => e.remove());
   return doc;
 }
 
@@ -2304,7 +2302,7 @@ async function runBot() {
                 if (claudeKey && relevanceScore(pt, q) > 0.2 && pt.length > 300) {
                   claudeTexts.push({ source: new URL(u).hostname, text: pt });
                   if (!claudePromise && claudeTexts.length >= 2)
-                    claudePromise = claudeExtract(claudeTexts, q, searchType);
+                    claudePromise = claudeExtract(claudeTexts, q, searchType, signal);
                 }
                 checkEarlyExit();
               }
@@ -2325,7 +2323,7 @@ async function runBot() {
           if (claudeKey && relevanceScore(text, q) > 0.2 && text.length > 300) {
             claudeTexts.push({ source: s.id, text });
             if (!claudePromise && claudeTexts.length >= 2)
-              claudePromise = claudeExtract(claudeTexts, q, searchType);
+              claudePromise = claudeExtract(claudeTexts, q, searchType, signal);
           }
           checkEarlyExit();
         }
@@ -2438,7 +2436,7 @@ async function runBot() {
 
     // ── Claude: fire on any remaining pages if not yet triggered ──────────
     if (claudeKey && claudeTexts.length >= 1 && !claudePromise)
-      claudePromise = claudeExtract(claudeTexts, q, searchType);
+      claudePromise = claudeExtract(claudeTexts, q, searchType, signal);
 
     let aiEnhanced = false;
     if (claudePromise) {
@@ -2450,7 +2448,7 @@ async function runBot() {
         const aiFieldCount = Object.keys(claudeFields).filter(k => claudeFields[k]).length;
         Object.entries(claudeFields).forEach(([k, v]) => { if (v && v !== '') merged[k] = v; });
         if (Object.keys(merged).filter(k => !k.startsWith('_')).length >= 4) {
-          const desc = await claudePolishDescription(merged, q, searchType).catch(() => null);
+          const desc = await claudePolishDescription(merged, q, searchType, signal).catch(() => null);
           if (!signal.aborted && desc) merged.description = desc;
         }
         log(`AI verified ${aiFieldCount} field(s)`, 'ok');
@@ -3228,7 +3226,7 @@ function showSavePreview(info, btnId) {
         const claudeKey = await getClaudeKey();
         if (claudeKey && enrichTexts.length >= 1) {
           setPhase('AI extracting fields…');
-          const claudeFields = await claudeExtract(enrichTexts, name, facilityType).catch(() => ({}));
+          const claudeFields = await claudeExtract(enrichTexts, name, facilityType, signal).catch(() => ({}));
           if (!modal.classList.contains('show')) return;
           for (const [k, v] of Object.entries(claudeFields)) { if (v) patchField(k, v); }
 
@@ -3237,7 +3235,7 @@ function showSavePreview(info, btnId) {
           const filledCount = Object.keys(allData).filter(k => !k.startsWith('_')).length;
           if (filledCount >= 3) {
             setPhase('Writing description…');
-            const desc = await claudePolishDescription(allData, name, facilityType).catch(() => null);
+            const desc = await claudePolishDescription(allData, name, facilityType, signal).catch(() => null);
             if (desc && modal.classList.contains('show')) patchField('description', desc);
           }
         }
