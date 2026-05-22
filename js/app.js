@@ -441,7 +441,7 @@ window.addEventListener('load', async () => {
 
   populateYearSelects();
   renderSaved();
-  updStats();
+  updateStats();
   updateSavedBadge();
 
   // Category options per facility type
@@ -799,7 +799,7 @@ function toggleFilters() {
   btn.textContent = opening ? 'Filters ▴' : 'Filters ▾';
 }
 
-function updStats() {
+function updateStats() {
   document.getElementById('s-searches').textContent = stats.searches;
   document.getElementById('s-ships').textContent    = stats.ships;
   document.getElementById('s-images').textContent   = stats.images;
@@ -824,7 +824,7 @@ function extractIMOs(text) {
   return [...found].sort();
 }
 
-function hlIMO(text) {
+function highlightIMO(text) {
   // Escape first, then highlight — prevents XSS in raw scraped text
   return esc(text)
     .replace(/\bIMO[\s:.\-#]*(\d{7})\b/gi, (_, n) =>
@@ -836,7 +836,7 @@ function hlIMO(text) {
 /* ═══════════════════════════════════════════
    PROXY FETCH — with fallback chain & cache
 ═══════════════════════════════════════════ */
-async function pfetch(url, signal) {
+async function fetchViaProxy(url, signal) {
   if (!isValidURL(url)) throw new Error('Blocked: invalid or private URL');
 
   // Check cache first
@@ -939,7 +939,7 @@ async function pfetch(url, signal) {
   throw lastErr || new Error('All proxies exhausted after retries');
 }
 
-function mkDoc(html) {
+function parseHTML(html) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   doc.querySelectorAll('script,style,nav,footer,iframe,noscript,form,header,aside,[class*="cookie"],[class*="consent"],[class*="banner"],[class*="popup"],[id*="cookie"],[id*="gdpr"]').forEach(e => e.remove());
   return doc;
@@ -1110,7 +1110,7 @@ async function fetchBingImages(query, signal) {
 
   // Bing image search — try multiple JSON key patterns Bing uses
   try {
-    const html = await pfetch(
+    const html = await fetchViaProxy(
       `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC2&first=1`,
       signal
     );
@@ -1127,7 +1127,7 @@ async function fetchBingImages(query, signal) {
   // DuckDuckGo image search as fallback / supplement
   if (imgs.length < 3) {
     try {
-      const html = await pfetch(
+      const html = await fetchViaProxy(
         `https://duckduckgo.com/?q=${encodeURIComponent(query)}&iax=images&ia=images`,
         signal
       );
@@ -1874,7 +1874,7 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
 
   // Image gallery HTML (src validated, alt escaped)
   const imgHTML = imgs.length ? imgs.map(img =>
-    `<div class="iw" onclick="lb('${encodeURIComponent(img.src)}','${encodeURIComponent(img.label)}')">
+    `<div class="iw" onclick="openLightbox('${encodeURIComponent(img.src)}','${encodeURIComponent(img.label)}')">
       <img src="${esc(img.src)}" alt="${esc(img.label)}" loading="lazy"
            onerror="this.parentElement.style.display='none'">
       <div class="isrc">${esc(img.label)}</div>
@@ -1887,7 +1887,7 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
   const rawHTML = sources.filter(s => s.ok && s.text).map(s =>
     `<div style="margin-bottom:10px">
       <div class="label" style="margin-bottom:5px">${esc(s.id)}</div>
-      <div class="text-view">${hlIMO(s.text)}</div>
+      <div class="text-view">${highlightIMO(s.text)}</div>
     </div>`).join('');
 
   const savePayload = esc(JSON.stringify({name, imo, ...info}));
@@ -1960,7 +1960,7 @@ async function runBot() {
       const out = document.getElementById('bot-output');
       if (out) out.innerHTML = cached;
       stats.searches++;
-      updStats();
+      updateStats();
       toast('Served from cache — search again to refresh');
       return;
     }
@@ -1974,7 +1974,7 @@ async function runBot() {
   document.getElementById('cancel-btn').classList.add('show');
 
   stats.searches++;
-  updStats();
+  updateStats();
 
   const out = document.getElementById('bot-output');
   out.innerHTML = `
@@ -1992,7 +1992,7 @@ async function runBot() {
   const priorKnowledge = checkLearned(q);
   if (priorKnowledge) {
     const fCount = Object.keys(priorKnowledge.fields).length;
-    log(`🧠 Knowledge base hit: "${q}" searched ${priorKnowledge.hitCount}× — ${fCount} fields cached, fetching updates…`, 'ok');
+    log(`Knowledge base hit: "${q}" searched ${priorKnowledge.hitCount}× — ${fCount} fields cached, fetching updates…`, 'ok');
   }
 
   try {
@@ -2197,9 +2197,9 @@ async function runBot() {
       if (scrapeSignal.aborted) break;
       try {
         log(`→ ${s.id}…`, 'info');
-        const html = await pfetch(s.url, scrapeSignal);
+        const html = await fetchViaProxy(s.url, scrapeSignal);
         if (scrapeSignal.aborted) break;
-        const doc  = mkDoc(html);
+        const doc  = parseHTML(html);
         let   text = doc.body?.innerText?.slice(0, 8000) || '';
 
         const pageLang = detectLang(doc, text);
@@ -2219,15 +2219,15 @@ async function runBot() {
           for (const u of topURLs) {
             if (scrapeSignal.aborted) break;
             try {
-              const ph = await pfetch(u, scrapeSignal);
+              const ph = await fetchViaProxy(u, scrapeSignal);
               if (scrapeSignal.aborted) break;
-              const pd = mkDoc(ph);
+              const pd = parseHTML(ph);
               let   pt = pd.body?.innerText?.slice(0, 8000) || '';
               const subLang = detectLang(pd, pt);
               if (subLang !== 'en') { try { pt = await translate(pt.slice(0, 3000), scrapeSignal); } catch {} }
               const rel = relevanceScore(pt, q);
-              if (rel === 0 && !s._fallback) { log(`⚠ Skipped (off-topic): ${new URL(u).hostname}`, 'warn'); continue; }
-              if (!topicMatch(pt, searchType)) { log(`⚠ Skipped (wrong topic): ${new URL(u).hostname}`, 'warn'); continue; }
+              if (rel === 0 && !s._fallback) { log(`Skipped (off-topic): ${new URL(u).hostname}`, 'warn'); continue; }
+              if (!topicMatch(pt, searchType)) { log(`Skipped (wrong topic): ${new URL(u).hostname}`, 'warn'); continue; }
               const pf = filterFieldsByType(extractFields(pd, pt), searchType);
               const fc = Object.keys(pf).filter(k => !k.startsWith('_')).length;
               if (fc >= 1) {
@@ -2250,7 +2250,7 @@ async function runBot() {
         const filteredFields = filterFieldsByType(fields, searchType);
         const fc = Object.keys(filteredFields).filter(k=>!k.startsWith('_')).length;
         if ((rel === 0 && fc < 2 && s._fallback) || !topicMatch(text, searchType)) {
-          log(`⚠ Skipped (off-topic): ${s.id}`, 'warn');
+          log(`Skipped (off-topic): ${s.id}`, 'warn');
         } else {
           log(`✓ ${s.id} — ${fc} fields, ${imgs.length} imgs`, 'ok');
           scrapeResults.push({ id:s.id, ok:true, url:s.url, fields:filteredFields, imgs, text });
@@ -2305,7 +2305,7 @@ async function runBot() {
 
     stats.images += allImgs.length;
     stats.ships++;
-    updStats();
+    updateStats();
     setProgress(88);
 
     /* Step 4: Translate */
@@ -2328,7 +2328,7 @@ async function runBot() {
       Object.entries(priorKnowledge.fields).forEach(([k, v]) => {
         if (v && !merged[k]) { merged[k] = v; cacheHits++; }
       });
-      if (cacheHits > 0) log(`🧠 Cache filled ${cacheHits} missing field${cacheHits>1?'s':''}`, 'ok');
+      if (cacheHits > 0) log(`Cache filled ${cacheHits} missing field${cacheHits>1?'s':''}`, 'ok');
     }
 
     // Broad retry: if fewer than 3 real fields found AND no confident cache covers us
@@ -2344,7 +2344,7 @@ async function runBot() {
       for (const rUrl of retryURLs) {
         if (signal.aborted) break;
         try {
-          const rHtml = await pfetch(rUrl, signal);
+          const rHtml = await fetchViaProxy(rUrl, signal);
           const rUrls = [...new Set(
             (rHtml.match(/href="(https?:\/\/(?!www\.bing\.com|duckduckgo\.com)[^"]{12,300})"/g) || [])
               .map(m => m.slice(6,-1)).filter(isValidURL)
@@ -2352,8 +2352,8 @@ async function runBot() {
           for (const ru of rUrls) {
             if (signal.aborted) break;
             try {
-              const rPh = await pfetch(ru, signal);
-              const rPd = mkDoc(rPh);
+              const rPh = await fetchViaProxy(ru, signal);
+              const rPd = parseHTML(rPh);
               let rPt = rPd.body?.innerText?.slice(0, 8000) || '';
               if (relevanceScore(rPt, q) === 0) continue;
               const rPf = filterFieldsByType(extractFields(rPd, rPt), searchType);
@@ -2544,17 +2544,17 @@ async function queryFarmAPIs(q, signal, yearTo = 2020) {
   if (osmSettled.status === 'fulfilled' && osmSettled.value)   results.push(osmSettled.value);
   if (wikiSettled.status === 'fulfilled' && wikiSettled.value) results.push(wikiSettled.value);
 
-  // Run FAO and ASC in parallel — both use pfetch (proxy layer handles concurrency)
+  // Run FAO and ASC in parallel — both use fetchViaProxy (proxy layer handles concurrency)
   const [faoSettled, ascSettled] = await Promise.allSettled([
 
     /* ── 3. FAO Fisheries & Aquaculture ── */
     (async () => {
       log('FAO: searching fisheries & aquaculture records…', 'info');
-      const faoHTML = await pfetch(
+      const faoHTML = await fetchViaProxy(
         `https://www.fao.org/fishery/en/search?query=${encodeURIComponent(safeQ)}&field=aquaculture`,
         signal
       );
-      const faoDoc  = mkDoc(faoHTML);
+      const faoDoc  = parseHTML(faoHTML);
       const faoText = faoDoc.body?.innerText?.slice(0, 6000) || '';
       if (relevanceScore(faoText, q) > 0) {
         const fields = extractFields(faoDoc, faoText);
@@ -2571,11 +2571,11 @@ async function queryFarmAPIs(q, signal, yearTo = 2020) {
     /* ── 4. ASC (Aquaculture Stewardship Council) ── */
     (async () => {
       log('ASC: searching certified producers…', 'info');
-      const ascHTML = await pfetch(
+      const ascHTML = await fetchViaProxy(
         `https://www.asc-aqua.org/find-a-farm/?q=${encodeURIComponent(safeQ)}`,
         signal
       );
-      const ascDoc  = mkDoc(ascHTML);
+      const ascDoc  = parseHTML(ascHTML);
       const ascText = ascDoc.body?.innerText?.slice(0, 4000) || '';
       if (relevanceScore(ascText, q) > 0) {
         const fields = extractFields(ascDoc, ascText);
@@ -2769,7 +2769,7 @@ async function scrapeURL() {
   currentAC = new AbortController();
   const { signal } = currentAC;
   stats.searches++;
-  updStats();
+  updateStats();
 
   const out = document.getElementById('bot-output');
   const urlLabel = urls.length > 1 ? `${urls.length} URLs` : esc(urls[0]);
@@ -2790,8 +2790,8 @@ async function scrapeURL() {
     const settled = await Promise.allSettled(urls.map(async (urlRaw, i) => {
       const tag = urls.length > 1 ? `[${i+1}] ` : '';
       log(`${tag}Fetching ${new URL(urlRaw).hostname}…`, 'info');
-      const html   = await pfetch(urlRaw, signal);
-      const doc    = mkDoc(html);
+      const html   = await fetchViaProxy(urlRaw, signal);
+      const doc    = parseHTML(html);
       const text   = doc.body?.innerText?.slice(0, 5000) || '';
       const fields = extractFields(doc, text);
       const imgs   = extractImages(doc, urlRaw);
@@ -2836,7 +2836,7 @@ async function scrapeURL() {
     setProgress(100);
     stats.ships++;
     stats.images += allImgs.length;
-    updStats();
+    updateStats();
 
     // Teach the knowledge base
     const cardName = merged.vessel_name || merged.farm_name || successes[0].hostname;
@@ -2899,15 +2899,15 @@ async function scrapeURL() {
 /* ═══════════════════════════════════════════
    LIGHTBOX (safe URL handling)
 ═══════════════════════════════════════════ */
-function lb(encodedSrc, encodedLabel) {
+function openLightbox(encodedSrc, encodedLabel) {
   const src = decodeURIComponent(encodedSrc);
   if (!isValidURL(src)) return;
   document.getElementById('lb-img').src = src;
   document.getElementById('lb-caption').textContent = decodeURIComponent(encodedLabel || '');
   document.getElementById('lightbox').classList.add('show');
 }
-function closeLB() { document.getElementById('lightbox').classList.remove('show'); }
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeLB(); closeSavePreview(); } });
+function closeLightbox() { document.getElementById('lightbox').classList.remove('show'); }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeLightbox(); closeSavePreview(); } });
 
 /* ═══════════════════════════════════════════
    SAVE PREVIEW MODAL
@@ -3127,7 +3127,7 @@ function showSavePreview(info, btnId) {
         for (const engine of searchEngines) {
           if (signal.aborted || !modal.classList.contains('show')) break;
           try {
-            const html = await pfetch(engine, signal);
+            const html = await fetchViaProxy(engine, signal);
             const found = (html.match(/href="(https?:\/\/(?!(?:duckduckgo|bing|microsoft)\.com)[^"]{12,300})"/g) || [])
               .map(m => m.slice(6, -1)).filter(isValidURL);
             for (const u of found) { if (scrapedURLs.size < 8) scrapedURLs.add(u); }
@@ -3138,8 +3138,8 @@ function showSavePreview(info, btnId) {
         for (const url of scrapedURLs) {
           if (signal.aborted || !modal.classList.contains('show')) break;
           try {
-            const html  = await pfetch(url, signal);
-            const doc   = mkDoc(html);
+            const html  = await fetchViaProxy(url, signal);
+            const doc   = parseHTML(html);
             let   text  = doc.body?.innerText?.slice(0, 8000) || '';
             if (relevanceScore(text, name) === 0) continue;
             const fields = filterFieldsByType(extractFields(doc, text), facilityType);
@@ -3299,7 +3299,7 @@ async function handleFileRaw(file) {
   // Download + text view
   const row = document.createElement('div'); row.className = 'btn-row';
   const dlBtn = document.createElement('button'); dlBtn.className = 'btn btn-ghost btn-sm';
-  dlBtn.textContent = 'Download text'; dlBtn.onclick = dlTxt;
+  dlBtn.textContent = 'Download text'; dlBtn.onclick = downloadText;
   row.appendChild(dlBtn);
   frag.appendChild(row);
 
@@ -3357,7 +3357,7 @@ async function handleFileRaw(file) {
           div.innerHTML = renderCard(cardName, imo, merged, scrapeResults, allImgs);
           webOut.appendChild(div);
           cardCount++;
-          stats.searches++; stats.ships++; updStats();
+          stats.searches++; stats.ships++; updateStats();
         } catch(e) {
           if (e.name === 'AbortError') break;
           status.className = 'status s-err';
@@ -3452,7 +3452,7 @@ function fileSearch() {
     }</div>`).join('');
   toast(hits.length + ' match(es)');
 }
-function dlTxt() {
+function downloadText() {
   const blob = new Blob([lastFileText], {type:'text/plain'});
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
@@ -3605,8 +3605,8 @@ async function bulkScrapeItem(q, searchType, yearTo, catFilter, signal) {
   for (const s of scraperURLs) {
     if (signal?.aborted) break;
     try {
-      const html = await pfetch(s.url, signal);
-      const doc  = mkDoc(html);
+      const html = await fetchViaProxy(s.url, signal);
+      const doc  = parseHTML(html);
       let   text = doc.body?.innerText?.slice(0, 8000) || '';
 
       const pageLang = detectLang(doc, text);
@@ -3626,8 +3626,8 @@ async function bulkScrapeItem(q, searchType, yearTo, catFilter, signal) {
         for (const u of topURLs) {
           if (signal?.aborted) break;
           try {
-            const ph = await pfetch(u, signal);
-            const pd = mkDoc(ph);
+            const ph = await fetchViaProxy(u, signal);
+            const pd = parseHTML(ph);
             let   pt = pd.body?.innerText?.slice(0, 8000) || '';
             const subLang = detectLang(pd, pt);
             if (subLang !== 'en') {
@@ -3727,7 +3727,7 @@ async function doBulk() {
         d.className='status s-err'; d.textContent=`✗ ${q}: ${e.message}`;
         out.appendChild(d);
       }
-      stats.searches++; stats.ships++; updStats();
+      stats.searches++; stats.ships++; updateStats();
       if (!signal.aborted) await sleep(1500); // courtesy gap between items
     }
     const completed = !signal.aborted;
@@ -3775,7 +3775,7 @@ function doSave(info, btnId) {
   saved.push(record);
   persist();
   updateSavedBadge();
-  updStats();
+  updateStats();
   toast('Saved: ' + (info.name || info.vessel_name || info.farm_name || key || 'Record'));
   if (btnId) {
     const btn = document.getElementById(btnId);
@@ -3790,7 +3790,7 @@ function deleteSaved(id) {
   saved = saved.filter(s => s._id !== id);
   persist();
   updateSavedBadge();
-  updStats();
+  updateStats();
   renderSaved();
   toast('Record deleted');
 }
@@ -3964,7 +3964,7 @@ function clearSaved() {
   saved = [];
   persist();
   updateSavedBadge();
-  updStats();
+  updateStats();
   renderSaved();
 }
 
@@ -4073,7 +4073,7 @@ function renderKnowledge() {
     .slice(0, 20);
 
   if (!entities.length && !domains.length) {
-    el.innerHTML = '<div class="empty"><span class="empty-icon">🧠</span><div class="empty-title">Nothing learned yet</div><span class="empty-sub">Run any search, scrape a URL, or upload a file — the bot stores every result here so future searches are faster and smarter.</span></div>';
+    el.innerHTML = '<div class="empty"><div class="empty-title">Nothing learned yet</div><span class="empty-sub">Run any search, scrape a URL, or upload a file — the bot stores every result here so future searches are faster and smarter.</span></div>';
     return;
   }
 
