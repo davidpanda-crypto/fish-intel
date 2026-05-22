@@ -2495,6 +2495,7 @@ async function runBot() {
     }
   } finally {
     isRunning = false;
+    currentAC = null;
     document.getElementById('search-btn').disabled = false;
     document.getElementById('cancel-btn').classList.remove('show');
     logEl = null;
@@ -2578,7 +2579,7 @@ async function queryFarmAPIs(q, signal, yearTo = 2020) {
       for (const wq of wikiQueries) {
         const r = await fetch(
           `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(wq)}&format=json&origin=*&srlimit=3`,
-          { signal: AbortSignal.timeout(10000) }
+          { signal: timedSignal(signal, 10000) }
         );
         const d = await r.json();
         hit = d.query?.search?.[0];
@@ -2587,7 +2588,7 @@ async function queryFarmAPIs(q, signal, yearTo = 2020) {
       if (!hit) { log('Wikipedia: no match found', 'warn'); return null; }
       const summResp = await fetch(
         `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(hit.title)}`,
-        { signal: AbortSignal.timeout(10000) }
+        { signal: timedSignal(signal, 10000) }
       );
       if (!summResp.ok) { log('Wikipedia: summary fetch failed', 'warn'); return null; }
       const s = await summResp.json();
@@ -2708,14 +2709,14 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
       log('OSM Overpass: searching vessel / harbour records…', 'info');
       const osmQ = safeQ.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/"/g, '\\"');
       const oq =
-        `[out:json][timeout:20];` +
+        `[out:json][timeout:7];` +
         `(node["name"~"${osmQ}","i"]["seamark:type"];` +
         ` node["name"~"${osmQ}","i"]["harbour"]; ` +
         ` node["name"~"${osmQ}","i"]["landuse"="harbour"];` +
         `);out center;`;
       const resp = await fetch('https://overpass-api.de/api/interpreter', {
         method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
-        body:'data=' + encodeURIComponent(oq), signal,
+        body:'data=' + encodeURIComponent(oq), signal: timedSignal(signal, 8000),
       });
       if (!resp.ok) return null;
       const data = await resp.json();
@@ -2831,6 +2832,7 @@ async function scrapeURL() {
   isRunning = true;
   currentAC = new AbortController();
   const { signal } = currentAC;
+  document.getElementById('cancel-btn').classList.add('show');
   stats.searches++;
   updateStats();
 
@@ -2869,9 +2871,11 @@ async function scrapeURL() {
     setProgress(70);
 
     const successes = settled.filter(r => r.status === 'fulfilled').map(r => r.value);
-    settled.filter(r => r.status === 'rejected').forEach((r, i) => {
-      const u = urls[settled.findIndex((s,idx) => s.status === 'rejected' && idx >= i)];
-      log(`✗ ${r.reason?.message || 'Failed'}`, 'err');
+    settled.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        const host = urls[i] ? new URL(urls[i]).hostname : 'URL';
+        log(`✗ ${host}: ${r.reason?.message || 'Failed'}`, 'err');
+      }
     });
 
     if (!successes.length) throw new Error('All URLs failed to load');
@@ -2881,6 +2885,14 @@ async function scrapeURL() {
     successes.forEach(({ fields }) => {
       Object.entries(fields).forEach(([k, v]) => { if (v && !merged[k]) merged[k] = v; });
     });
+    // Run the same validation + normalization as the main search pipeline
+    for (const [k, v] of Object.entries(merged)) {
+      if (typeof v === 'string') {
+        const clean = validateFieldValue(k, v);
+        if (clean) merged[k] = clean; else delete merged[k];
+      }
+    }
+    normalizeFields(merged);
 
     // Images from all sources combined — supplement with targeted searches
     let allImgs = successes.flatMap(s => s.imgs);
@@ -2959,8 +2971,9 @@ async function scrapeURL() {
     }
   } finally {
     isRunning = false;
+    currentAC = null;
     logEl = null;
-    document.getElementById('search-btn').disabled = false;
+    document.getElementById('cancel-btn').classList.remove('show');
   }
 }
 
@@ -4087,10 +4100,34 @@ function learnFromDomain(hostname, success, fieldCount) {
   d.hits++;
   if (success) { d.successes++; d.totalFields += (fieldCount || 0); }
   domainStats[hostname] = d;
-  persistLearned();
+  schedulePersistLearned(); // debounced — domain hits fire rapidly per search
+}
+
+// Debounce: batch rapid in-flight domain-stat updates into one write per 3 s
+let _persistLearnedTimer = null;
+function schedulePersistLearned() {
+  clearTimeout(_persistLearnedTimer);
+  _persistLearnedTimer = setTimeout(() => persistLearned(), 3000);
 }
 
 async function persistLearned() {
+  // Evict stale entries before writing — keeps the store bounded
+  const STALE_MS  = 30 * 24 * 60 * 60 * 1000; // 30 days
+  const MAX_ENTRIES = 500;
+  const now = Date.now();
+  // Remove entries not seen in 30 days
+  for (const k of Object.keys(learned)) {
+    if (now - new Date(learned[k].lastSeen).getTime() > STALE_MS) delete learned[k];
+  }
+  // If still over cap, evict the oldest entries first
+  const allKeys = Object.keys(learned);
+  if (allKeys.length > MAX_ENTRIES) {
+    allKeys
+      .sort((a, b) => new Date(learned[a].lastSeen) - new Date(learned[b].lastSeen))
+      .slice(0, allKeys.length - MAX_ENTRIES)
+      .forEach(k => delete learned[k]);
+  }
+
   try {
     if (window.AppIDB) {
       await AppIDB.put('knowledge', { key: 'learned', data: { learned, domainStats } });

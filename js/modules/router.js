@@ -37,7 +37,7 @@
         Object.fromEntries(Object.entries(params).filter(([, v]) => v))
       ).toString();
       const hash = '#' + path + (qs ? '?' + qs : '');
-      // Use replaceState so the user doesn't get a full history entry on every keystroke
+      // pushState: adds a history entry so the browser Back button returns to the previous search
       history.pushState(null, '', hash);
     },
 

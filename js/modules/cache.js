@@ -51,6 +51,20 @@
       }
       // Always write to memory as hot path
       _mem.set(key, entry);
+      // Purge expired + oldest entries when memory store grows too large
+      if (_mem.size > 100) {
+        const now = Date.now();
+        for (const [k, e] of _mem) {
+          if (now - e.ts > (e.ttl || DEFAULT_TTL_MS)) _mem.delete(k);
+        }
+        if (_mem.size > 100) {
+          // Still over cap — evict the 20 oldest entries
+          [..._mem.entries()]
+            .sort((a, b) => a[1].ts - b[1].ts)
+            .slice(0, 20)
+            .forEach(([k]) => _mem.delete(k));
+        }
+      }
     },
 
     /**
