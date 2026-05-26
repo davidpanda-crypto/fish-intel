@@ -18,6 +18,13 @@ fish-intel/
 │   ├── nextjs-conversion.md   — Proposed Next.js migration plan + folder structure
 │   ├── database-schema.md     — Proposed Directus collections and field schemas
 │   └── agentic-flow.md        — Ideas for a reasoning-capable agentic search loop
+├── tests/              — Test suite (placeholder — Vitest, not yet wired up)
+│   ├── README.md              — Test structure, priority cases, setup instructions
+│   └── unit/
+│       ├── validate.test.js   — validateFieldValue() regression specs
+│       ├── imo.test.js        — IMO check-digit validation specs
+│       ├── extract.test.js    — extractFields() against HTML fixtures
+│       └── relevance.test.js  — relevanceScore() and topicMatch() specs
 ├── css/
 │   └── style.css       — All styling (~4500 lines, CSS variables, responsive)
 └── js/
