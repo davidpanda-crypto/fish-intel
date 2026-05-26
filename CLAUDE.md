@@ -100,6 +100,16 @@ Each type has its own field schema, source list, and display card. The type sele
 | `reqCache` | Session-scoped in-memory URL → HTML cache (Map, max 100) |
 | `isRunning` | Boolean lock preventing double-submit |
 
+## Directus schema rules — always follow these
+
+Outlaw Ocean runs a shared Directus instance used by multiple products. Careless schema changes can break other projects.
+
+- **All collections created for this project must be prefixed `fi_`** — e.g. `fi_vessels`, `fi_farms`, `fi_mills`, `fi_searches`. Never create an unprefixed collection.
+- **Never modify, rename, or delete a collection that does not start with `fi_`.** Those belong to other OO projects.
+- **Never add fields to a non-`fi_` collection** without explicit confirmation that it is safe to do so.
+- **Before writing any Directus migration, query the existing schema first** (`/collections` endpoint or the MCP Directus tool) to confirm the collection does not already exist under a different name and that your new field names do not collide with system fields (Directus reserves fields like `id`, `status`, `sort`, `date_created`, `date_updated`, `user_created`, `user_updated`).
+- The canonical schema for `fi_` collections lives in [planning/database-schema.md](planning/database-schema.md). Treat that file as the source of truth and keep it in sync with any real migrations.
+
 ## Security rules — always follow these
 
 - **All user-controlled or scraped content must pass through `esc()` before DOM insertion.** Never use innerHTML directly with untrusted data.
