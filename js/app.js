@@ -557,7 +557,10 @@ window.addEventListener('load', async () => {
   // 3. Light up AI dot if key is already configured
   updateClaudeHeaderDot();
 
-  // 3. Register service worker for offline + asset caching
+  // 4. Init Directus connection (loads saved creds from IDB)
+  initDirectus();
+
+  // 5. Register service worker for offline + asset caching
   if ('serviceWorker' in navigator) {
     // Use relative path so it works on any base (localhost, GitHub Pages /fish-intel/, etc.)
     navigator.serviceWorker.register('sw.js', { scope: './' }).catch(e =>
@@ -615,7 +618,7 @@ async function getClaudeModel() {
 async function openSettings() {
   const modal = document.getElementById('settings-modal');
   if (!modal) return;
-  // Pre-fill saved key (masked) + model
+  // Pre-fill Claude key (masked) + model
   const savedKey   = await getClaudeKey();
   const savedModel = await getClaudeModel();
   const keyInput   = document.getElementById('claude-key-input');
@@ -623,6 +626,13 @@ async function openSettings() {
   if (keyInput) keyInput.value = savedKey ? '••••••••' + savedKey.slice(-6) : '';
   if (modelSel) modelSel.value = savedModel;
   updateClaudeStatus(!!savedKey);
+  // Pre-fill Directus credentials (mask token)
+  const { url, token } = await getDirectusCreds();
+  const urlEl   = document.getElementById('directus-url-input');
+  const tokenEl = document.getElementById('directus-token-input');
+  if (urlEl)   urlEl.value   = url   || '';
+  if (tokenEl) tokenEl.value = token ? '••••••••' + token.slice(-6) : '';
+  updateDirectusStatus(window.Directus?.isConfigured() || false);
   modal.classList.add('show');
 }
 function closeSettings() {
@@ -670,6 +680,72 @@ async function updateClaudeHeaderDot() {
   if (!dot) return;
   const key = await getClaudeKey();
   dot.style.display = key ? 'inline-flex' : 'none';
+}
+
+// ── Directus credentials (stored in IDB, never hardcoded) ─────────────────
+async function getDirectusCreds() {
+  try {
+    const entry = window.AppIDB ? await AppIDB.get('knowledge', 'directus-settings') : null;
+    return { url: entry?.url || null, token: entry?.token || null };
+  } catch { return { url: null, token: null }; }
+}
+
+async function initDirectus() {
+  const { url, token } = await getDirectusCreds();
+  if (url && token && window.Directus) {
+    window.Directus.configure(url, token);
+  }
+  updateDirectusStatus(window.Directus?.isConfigured() || false);
+}
+
+async function saveDirectusSettings() {
+  const urlEl   = document.getElementById('directus-url-input');
+  const tokenEl = document.getElementById('directus-token-input');
+  const url     = urlEl?.value?.trim()   || '';
+  const token   = tokenEl?.value?.trim() || '';
+
+  if (!url || !token) { toast('Enter both a URL and a token'); return; }
+  if (!/^https?:\/\//i.test(url)) { toast('URL must start with https://'); return; }
+  if (token.startsWith('••••')) { toast('Token unchanged'); return; }
+
+  try {
+    if (window.AppIDB) {
+      await AppIDB.put('knowledge', { key: 'directus-settings', url, token });
+    }
+    if (window.Directus) window.Directus.configure(url, token);
+
+    // Test immediately and show result
+    const statusEl = document.getElementById('directus-status');
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--mut)">Testing connection…</span>';
+
+    const ok = window.Directus ? await window.Directus.ping() : false;
+    updateDirectusStatus(ok);
+    toast(ok ? '✓ Directus connected' : '✗ Connected but ping failed — check CORS / collection access');
+  } catch (e) {
+    toast('Failed to save Directus settings');
+  }
+}
+
+async function clearDirectusSettings() {
+  if (!confirm('Disconnect Directus?')) return;
+  try {
+    if (window.AppIDB) await AppIDB.put('knowledge', { key: 'directus-settings', url: null, token: null });
+    if (window.Directus) window.Directus.configure(null, null);
+    const urlEl   = document.getElementById('directus-url-input');
+    const tokenEl = document.getElementById('directus-token-input');
+    if (urlEl)   urlEl.value   = '';
+    if (tokenEl) tokenEl.value = '';
+    updateDirectusStatus(false);
+    toast('Directus disconnected');
+  } catch {}
+}
+
+function updateDirectusStatus(connected) {
+  const el = document.getElementById('directus-status');
+  if (!el) return;
+  el.innerHTML = connected
+    ? `<div class="directus-status-ok">✓ Connected — saved records will sync to Directus</div>`
+    : `<div class="directus-status-off">Not connected — records are saved locally only</div>`;
 }
 
 // ── Core Claude API call ───────────────────────────────────────────────────
@@ -3940,6 +4016,15 @@ function doSave(info, btnId) {
   updateSavedBadge();
   updateStats();
   toast('Saved: ' + (info.name || info.vessel_name || info.farm_name || key || 'Record'));
+
+  // Sync to Directus (fire-and-forget — never blocks local save)
+  if (window.Directus?.isConfigured()) {
+    const query      = info.name || info.vessel_name || info.farm_name || key;
+    const searchType = record._facilityType || 'farm';
+    window.Directus.saveEntity(info, query, searchType, rid)
+      .then(d => { if (d) log(`Directus sync ✓ (id: ${d.id})`, 'ok'); })
+      .catch(() => {});
+  }
   if (btnId) {
     const btn = document.getElementById(btnId);
     if (btn) { btn.textContent = 'Saved!'; btn.disabled = true; btn.style.color = 'var(--grn)'; }
@@ -3956,6 +4041,10 @@ function deleteSaved(id) {
   updateStats();
   renderSaved();
   toast('Record deleted');
+  // Mirror delete in Directus
+  if (window.Directus?.isConfigured()) {
+    window.Directus.deleteEntity(id).catch(() => {});
+  }
 }
 
 function editNote(id) {

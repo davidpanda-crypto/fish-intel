@@ -422,6 +422,9 @@ hr{border:none;border-top:1px solid var(--bdr);margin:16px 0;}
 .claude-status-ok{background:var(--grnlt);border:1px solid #b0e0cc;color:var(--grn);padding:9px 13px;font-size:12px;font-weight:600;border-radius:var(--rad);}
 .claude-status-off{background:var(--surf2);border:1px solid var(--bdr);padding:9px 13px;font-size:12px;color:var(--mut2);border-radius:var(--rad);}
 .claude-status-off a{color:var(--accent);text-decoration:none;font-weight:600;}
+.directus-status-ok{background:var(--grnlt);border:1px solid #b0e0cc;color:var(--grn);padding:9px 13px;font-size:12px;font-weight:600;border-radius:var(--rad);}
+.directus-status-off{background:var(--surf2);border:1px solid var(--bdr);padding:9px 13px;font-size:12px;color:var(--mut2);border-radius:var(--rad);}
+.settings-divider{border:none;border-top:1px solid var(--bdr2);margin:4px 0 20px;}
 
 /* ── Focus visibility ── */
 .mode-btn:focus-visible,.filter-toggle-btn:focus-visible,.vt-btn:focus-visible,

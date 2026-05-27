@@ -12,9 +12,10 @@
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
 <!-- App modules: IDB adapter, hash router, TTL cache — load before app.js -->
-<script src="js/modules/idb.js?v=21"></script>
-<script src="js/modules/router.js?v=21"></script>
-<script src="js/modules/cache.js?v=21"></script>
+<script src="js/modules/idb.js?v=22"></script>
+<script src="js/modules/router.js?v=22"></script>
+<script src="js/modules/cache.js?v=22"></script>
+<script src="js/modules/directus.js?v=22"></script>
 
 <!-- pdf.js · xlsx · mammoth are lazy-loaded on first file upload (see app.js) -->
 
@@ -22,7 +23,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Libre+Franklin:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
 <!-- App styles -->
-<link rel="stylesheet" href="css/style.css?v=21">
+<link rel="stylesheet" href="css/style.css?v=22">
 </head>
 <body>
 
@@ -83,6 +84,21 @@
         <p class="settings-hint" style="margin-top:6px">Haiku is recommended — it extracts fields accurately at minimal cost (~$0.001 per search).</p>
       </div>
       <div id="claude-status" class="settings-section"></div>
+      <!-- ── Directus ── -->
+      <div class="settings-divider"></div>
+      <div class="settings-section">
+        <label class="settings-label">Directus Integration</label>
+        <p class="settings-hint" style="margin-bottom:10px">Sync saved records to your Directus instance. Credentials are stored locally in IndexedDB only.</p>
+        <label class="settings-label" for="directus-url-input" style="margin-top:4px">Instance URL</label>
+        <input type="url" id="directus-url-input" placeholder="https://your-directus.io" autocomplete="off" spellcheck="false" style="width:100%;margin-bottom:8px">
+        <label class="settings-label" for="directus-token-input">Static Token</label>
+        <div class="settings-key-row">
+          <input type="password" id="directus-token-input" placeholder="Paste token…" autocomplete="off" spellcheck="false">
+          <button class="btn btn-blue btn-sm" onclick="saveDirectusSettings()">Connect</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearDirectusSettings()">Clear</button>
+        </div>
+        <div id="directus-status" style="margin-top:10px"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -348,6 +364,6 @@
 </div><!-- /app -->
 
 <!-- App logic -->
-<script src="js/app.js?v=21"></script>
+<script src="js/app.js?v=22"></script>
 </body>
 </html>
