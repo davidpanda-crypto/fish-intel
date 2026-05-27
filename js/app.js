@@ -1772,6 +1772,20 @@ function mergeFields(results, query) {
     }
   }
 
+  // Accumulate species / input_species across ALL ranked sources (union, not first-wins)
+  // This ensures "Salmon" from source 1 + "Trout, Atlantic Cod" from source 2 → all three
+  for (const specKey of ['species', 'input_species']) {
+    const parts = [];
+    for (const r of ranked) {
+      const raw = r.fields?.[specKey];
+      if (!raw) continue;
+      const validated = validateFieldValue(specKey, raw);
+      if (validated) parts.push(validated);
+    }
+    if (parts.length > 0) m[specKey] = parts.join(', ');
+    // normalizeFields() below will split, deduplicate, title-case, and cap at 6
+  }
+
   // Use _heading as name fallback if no structured name found
   if (!m.farm_name && !m.vessel_name) {
     for (const r of ranked) {
@@ -1944,7 +1958,10 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
     : info._facilityType === 'farm'   ? 'Fish Farm / Aquaculture' : 'General';
   const catBadge  = info._category     ? `<span class="chip chip-b">${esc(info._category)}</span>` : '';
   const typeBadge = info._facilityType ? `<span class="chip chip-o">${esc(facilityLabel)}</span>` : '';
-  const specBadge = info.species       ? `<span class="chip chip-g">${esc(info.species)}</span>` : '';
+  const specBadge = info.species
+    ? info.species.split(',').map(s => s.trim()).filter(Boolean)
+        .map(s => `<span class="chip chip-g">${esc(s)}</span>`).join('')
+    : '';
   const watBadge  = info.water_type    ? `<span class="chip chip-b">${esc(info.water_type)}</span>` : '';
   const prodBadge = info.production_method ? `<span class="chip chip-o">${esc(info.production_method)}</span>` : '';
   const aiBadge   = aiEnhanced ? `<span class="chip chip-ai" title="Fields extracted by Claude AI">AI-verified</span>` : '';
