@@ -153,6 +153,24 @@ body{font-family:'Libre Franklin',system-ui,sans-serif;background:var(--bg);colo
 .btn-cancel.show{display:inline-block;}
 
 /* ── Saved section ── */
+/* ── SQL panel ── */
+.sql-panel{background:var(--surf2);border:1px solid var(--bdr2);border-radius:var(--rad);padding:16px;margin-bottom:18px;}
+.sql-panel-hdr{display:flex;align-items:baseline;gap:10px;margin-bottom:10px;}
+.sql-panel-title{font-size:12px;font-weight:700;color:var(--ink);text-transform:uppercase;letter-spacing:.6px;}
+.sql-panel-hint{font-size:11px;color:var(--mut2);flex:1;}
+.sql-panel-hint code{font-family:'Courier New',monospace;font-size:10.5px;background:var(--surf);padding:1px 4px;border-radius:3px;}
+.sql-input-row{display:flex;gap:7px;align-items:flex-start;margin-bottom:8px;}
+.sql-textarea{flex:1;font-family:'Courier New',monospace;font-size:12.5px;resize:vertical;min-height:60px;padding:8px;border:1px solid var(--bdr2);border-radius:var(--rad);background:var(--surf);color:var(--ink);}
+.sql-textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(26,74,122,.1);}
+.sql-shortcuts{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px;}
+.sql-results{max-height:360px;overflow-y:auto;}
+.sql-meta{font-size:11px;color:var(--mut2);margin-bottom:6px;}
+.sql-running{font-size:12px;color:var(--mut);padding:8px 0;}
+.sql-empty{font-size:12px;color:var(--mut2);padding:8px 0;font-style:italic;}
+.sql-err{background:#fef0f0;border:1px solid #fca5a5;color:#b91c1c;padding:8px 12px;border-radius:var(--rad);font-size:12px;font-family:'Courier New',monospace;}
+.sql-table{font-size:11.5px;}
+.sql-table td,.sql-table th{padding:6px 9px;}
+
 .saved-section{margin-top:36px;border-top:1px solid var(--bdr);padding-top:24px;}
 .saved-hdr{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px;}
 .saved-hdr-title{

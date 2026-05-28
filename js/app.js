@@ -560,7 +560,14 @@ window.addEventListener('load', async () => {
   // 4. Init Directus connection (loads saved creds from IDB)
   initDirectus();
 
-  // 5. Register service worker for offline + asset caching
+  // 5. Init SQLite — lazy, runs in background; bulk-imports any existing records
+  if (window.AppSQLite) {
+    AppSQLite.init().then(ok => {
+      if (ok && saved.length) AppSQLite.bulkImport(saved);
+    });
+  }
+
+  // 6. Register service worker for offline + asset caching
   if ('serviceWorker' in navigator) {
     // Use relative path so it works on any base (localhost, GitHub Pages /fish-intel/, etc.)
     navigator.serviceWorker.register('sw.js', { scope: './' }).catch(e =>
@@ -2185,6 +2192,9 @@ async function runBot() {
 
   stats.searches++;
   updateStats();
+
+  // Log to SQLite search history (non-blocking)
+  if (window.AppSQLite) AppSQLite.logSearch(q, searchType).catch(() => {});
 
   const out = document.getElementById('bot-output');
   out.innerHTML = `
@@ -4017,6 +4027,11 @@ function doSave(info, btnId) {
   updateStats();
   toast('Saved: ' + (info.name || info.vessel_name || info.farm_name || key || 'Record'));
 
+  // Sync to SQLite (fire-and-forget)
+  if (window.AppSQLite) {
+    AppSQLite.upsert(record).catch(() => {});
+  }
+
   // Sync to Directus (fire-and-forget — never blocks local save)
   if (window.Directus?.isConfigured()) {
     const query      = info.name || info.vessel_name || info.farm_name || key;
@@ -4041,6 +4056,8 @@ function deleteSaved(id) {
   updateStats();
   renderSaved();
   toast('Record deleted');
+  // Mirror delete in SQLite
+  if (window.AppSQLite) AppSQLite.remove(id).catch(() => {});
   // Mirror delete in Directus
   if (window.Directus?.isConfigured()) {
     window.Directus.deleteEntity(id).catch(() => {});
@@ -4437,6 +4454,79 @@ function exportExcel(data, fn) {
   XLSX.writeFile(wb, fn);
   toast('Downloaded ' + fn);
 }
+/* ═══════════════════════════════════════════
+   SQLITE EXPORT + QUERY PANEL
+═══════════════════════════════════════════ */
+async function exportSQLiteDB() {
+  if (!window.AppSQLite) { toast('SQLite not available'); return; }
+  const btn = document.getElementById('sqlite-export-btn');
+  if (btn) { btn.textContent = 'Preparing…'; btn.disabled = true; }
+  try {
+    const data = await AppSQLite.exportDB();
+    if (!data) { toast('No data in SQLite database yet'); return; }
+    const blob = new Blob([data], { type: 'application/x-sqlite3' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = `fish-intel-${new Date().toISOString().slice(0,10)}.db`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast('Downloaded SQLite database');
+  } catch (e) {
+    toast('Export failed: ' + e.message);
+  } finally {
+    if (btn) { btn.textContent = 'SQLite ↓'; btn.disabled = false; }
+  }
+}
+
+function toggleSQLPanel() {
+  const panel = document.getElementById('sql-panel');
+  if (!panel) return;
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) document.getElementById('sql-input')?.focus();
+}
+
+function setSQLQuery(sql) {
+  const el = document.getElementById('sql-input');
+  if (el) { el.value = sql; el.focus(); }
+}
+
+async function runSQLQuery() {
+  const el = document.getElementById('sql-input');
+  const out = document.getElementById('sql-results');
+  if (!el || !out) return;
+  const sql = el.value.trim();
+  if (!sql) return;
+  if (!window.AppSQLite) { out.innerHTML = '<div class="sql-err">SQLite not initialised</div>'; return; }
+
+  // Block destructive statements
+  if (/^\s*(drop|delete|truncate|alter|attach|detach)\b/i.test(sql)) {
+    out.innerHTML = '<div class="sql-err">Only SELECT queries are permitted in this panel.</div>';
+    return;
+  }
+
+  out.innerHTML = '<div class="sql-running">Running…</div>';
+  try {
+    const results = await AppSQLite.query(sql);
+    if (!results.length) {
+      out.innerHTML = '<div class="sql-empty">Query returned no rows.</div>';
+      return;
+    }
+    const { columns, values } = results[0];
+    const thead = `<tr>${columns.map(c => `<th>${esc(c)}</th>`).join('')}</tr>`;
+    const tbody = values.map(row =>
+      `<tr>${row.map(v => `<td>${esc(v == null ? '' : String(v))}</td>`).join('')}</tr>`
+    ).join('');
+    out.innerHTML = `
+      <div class="sql-meta">${values.length} row${values.length !== 1 ? 's' : ''}</div>
+      <div class="tbl-wrap"><table class="sv-table sql-table">
+        <thead>${thead}</thead><tbody>${tbody}</tbody>
+      </table></div>`;
+  } catch (e) {
+    out.innerHTML = `<div class="sql-err">Error: ${esc(e.message)}</div>`;
+  }
+}
+
 function dlBlob(content, fn, mime) {
   const url = URL.createObjectURL(new Blob([content],{type:mime}));
   const a   = document.createElement('a');
