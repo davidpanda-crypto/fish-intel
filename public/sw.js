@@ -5,19 +5,21 @@
  * Works correctly on any base path (localhost, GitHub Pages /fish-intel/, etc.)
  * by computing BASE dynamically from the SW's own URL.
  */
-const CACHE_VER = 'fish-intel-v18';
+const CACHE_VER = 'fish-intel-v19';
 
 // Derive base path from the SW's location (e.g. /fish-intel/ or /)
 const BASE = self.location.pathname.replace(/\/sw\.js$/, '/');
 
+// Note: index.html is NOT listed — Next.js has no static index.html;
+// BASE (the root route) is cached instead and serves as the offline fallback.
 const SHELL_URLS = [
   BASE,
-  BASE + 'index.html',
   BASE + 'css/style.css',
   BASE + 'js/app.js',
   BASE + 'js/modules/idb.js',
   BASE + 'js/modules/router.js',
   BASE + 'js/modules/cache.js',
+  BASE + 'js/modules/sqlite.js',
 ];
 
 // ── Install: pre-cache app shell ──────────────────────────────────────────────

@@ -587,11 +587,12 @@ window.addEventListener('load', async () => {
   // 2. Boot hash router — auto-runs search if URL has #search?q=...
   if (window.AppRouter) AppRouter.init();
 
-  // 3. Light up AI dot if key is already configured
+  // 3. Light up AI dot if key is already configured, or probe server for AI
   updateClaudeHeaderDot();
+  detectServerAI(); // fire-and-forget; updates dot again if server AI is found
 
-  // 4. Init Directus connection (loads saved creds from IDB)
-  initDirectus();
+  // 4. Directus disabled — uncomment to re-enable sync
+  // initDirectus();
 
   // 5. Register service worker for offline + asset caching
   if ('serviceWorker' in navigator) {
@@ -694,7 +695,9 @@ async function saveClaudeKey() {
 async function clearClaudeKey() {
   if (!confirm('Remove the saved API key?')) return;
   try {
-    if (window.AppIDB) await AppIDB.put('knowledge', { key: 'claude-settings', apiKey: null, model: 'claude-3-5-haiku-20241022' });
+    // Preserve the user's model preference — only clear the key
+    const currentModel = await getClaudeModel();
+    if (window.AppIDB) await AppIDB.put('knowledge', { key: 'claude-settings', apiKey: null, model: currentModel });
     document.getElementById('claude-key-input').value = '';
     updateClaudeStatus(false);
     updateClaudeHeaderDot();
@@ -712,7 +715,7 @@ async function updateClaudeHeaderDot() {
   const dot = document.getElementById('claude-dot');
   if (!dot) return;
   const key = await getClaudeKey();
-  dot.style.display = key ? 'inline-flex' : 'none';
+  dot.style.display = (key || _serverAIReady) ? 'inline-flex' : 'none';
 }
 
 // ── Directus credentials (stored in IDB, never hardcoded) ─────────────────
@@ -781,8 +784,51 @@ function updateDirectusStatus(connected) {
     : `<div class="directus-status-off">Not connected — records are saved locally only</div>`;
 }
 
+// ── Server AI availability probe ──────────────────────────────────────────
+// Set to true once /api/health confirms at least one server-side AI provider.
+// This lets runBot() use AI even when no client-side key is stored.
+let _serverAIReady = false;
+
+async function detectServerAI() {
+  try {
+    const r = await fetch('/api/health', { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) return;
+    const d = await r.json();
+    _serverAIReady = !!(d.providers?.claude || d.providers?.qwen);
+    if (_serverAIReady) {
+      updateClaudeHeaderDot();
+      console.info('[AI] Server AI available:', d.providers);
+    }
+  } catch { /* probe failed — stay false */ }
+}
+
 // ── Core Claude API call ───────────────────────────────────────────────────
 async function callClaude(system, user, maxTokens = 800, signal = null) {
+  // ── Next.js server route (handles Qwen32B or Claude key server-side, no CORS) ──
+  try {
+    const r = await fetch('/api/ai', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ system, user, maxTokens }),
+      signal: timedSignal(signal, 35000),
+    });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.text) {
+        log(`AI via server (${d.provider || 'server'}) ✓`, 'ok');
+        return d.text;
+      }
+    }
+    // 404 = static/GitHub Pages mode — fall through to direct browser call
+    // 503 = server route exists but no AI provider configured — try client key below
+    // Other non-2xx = server error — do not retry with client key
+    if (r.status !== 404 && r.status !== 503) return null;
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    // Network error or missing route — continue to direct call below
+  }
+
+  // ── Direct browser → Anthropic (GitHub Pages fallback, requires client-stored key) ──
   const [key, model] = await Promise.all([getClaudeKey(), getClaudeModel()]);
   if (!key) return null;
   const res = await fetch(CLAUDE_API, {
@@ -968,12 +1014,14 @@ function extractIMOs(text) {
 }
 
 function highlightIMO(text) {
-  // Escape first, then highlight — prevents XSS in raw scraped text
+  // Escape first, then highlight — prevents XSS in raw scraped text.
+  // Single-pass alternation avoids double-wrapping already-highlighted spans
+  // that the second chained replace would otherwise re-process.
   return esc(text)
-    .replace(/\bIMO[\s:.\-#]*(\d{7})\b/gi, (_, n) =>
-      `IMO <span class="ih">${esc(n)}</span>`)
-    .replace(/\b(\d{7})\b/g, m =>
-      validIMO(m) ? `<span class="ih">${esc(m)}</span>` : esc(m));
+    .replace(/\bIMO[\s:.\-#]*(\d{7})\b|\b(\d{7})\b/gi, (match, prefixed, bare) => {
+      if (prefixed !== undefined) return `IMO <span class="ih">${prefixed}</span>`;
+      return validIMO(bare) ? `<span class="ih">${bare}</span>` : bare;
+    });
 }
 
 /* ═══════════════════════════════════════════
@@ -985,7 +1033,32 @@ async function fetchViaProxy(url, signal) {
   // Check cache first
   if (reqCache.has(url)) { log('Cache hit ✓', 'ok'); return reqCache.get(url); }
 
-  // Rate limit per domain
+  // ── Next.js server-side scrape (no CORS, full headers, direct HTTP) ──
+  try {
+    const r = await fetch('/api/scrape', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url }),
+      signal: timedSignal(signal, 22000),
+    });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.ok && d.text && d.text.length > 50) {
+        reqCache.set(url, d.text);
+        log('Fetched via server ✓', 'ok');
+        return d.text;
+      }
+      // Server returned ok:false — fall through to proxy chain
+    } else if (r.status !== 404) {
+      // Server error (5xx) — don't silently swallow, just fall through
+    }
+    // 404 = running on GitHub Pages (no API routes) — fall through to CORS proxies
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    // Network error / no route — fall through to CORS proxy chain
+  }
+
+  // Rate limit per domain (only needed for CORS proxy path)
   try { await rateLimit(new URL(url).hostname, 400); } catch {}
 
   const MAX_RETRIES = 2; // 2 attempts per proxy: first try + one retry with backoff
@@ -2383,7 +2456,7 @@ async function runBot() {
     const claudeKey     = await getClaudeKey();
 
     // Pre-seed claudeTexts with API results (Wikipedia, OSM) — they're already in scrapeResults
-    if (claudeKey) {
+    if (claudeKey || _serverAIReady) {
       for (const r of farmAPIResults) {
         if (r.ok && r.text && r.text.length > 100) {
           claudeTexts.push({ source: r.id, text: r.text });
@@ -2484,7 +2557,7 @@ async function runBot() {
                 log(`✓ ${s._fallback?'Fallback':'Found'}: ${new URL(u).hostname} — ${fc} field(s)${subLang!=='en'?` [${subLang}]`:''}`, 'ok');
                 scrapeResults.push({ id:new URL(u).hostname, ok:true, url:u, fields:pf, imgs:extractImages(pd,u), text:pt });
                 // Feed promising pages to Claude concurrently
-                if (claudeKey && relevanceScore(pt, q) > 0.2 && pt.length > 300) {
+                if ((claudeKey || _serverAIReady) && relevanceScore(pt, q) > 0.2 && pt.length > 300) {
                   claudeTexts.push({ source: new URL(u).hostname, text: pt });
                   if (!claudePromise && claudeTexts.length >= 2)
                     claudePromise = claudeExtract(claudeTexts, q, searchType, signal);
@@ -2505,7 +2578,7 @@ async function runBot() {
           log(`✓ ${s.id} — ${fc} fields, ${imgs.length} imgs`, 'ok');
           scrapeResults.push({ id:s.id, ok:true, url:s.url, fields:filteredFields, imgs, text });
           // Feed promising pages to Claude concurrently
-          if (claudeKey && relevanceScore(text, q) > 0.2 && text.length > 300) {
+          if ((claudeKey || _serverAIReady) && relevanceScore(text, q) > 0.2 && text.length > 300) {
             claudeTexts.push({ source: s.id, text });
             if (!claudePromise && claudeTexts.length >= 2)
               claudePromise = claudeExtract(claudeTexts, q, searchType, signal);
@@ -2620,7 +2693,7 @@ async function runBot() {
     }
 
     // ── Claude: fire on any remaining pages if not yet triggered ──────────
-    if (claudeKey && claudeTexts.length >= 1 && !claudePromise)
+    if ((claudeKey || _serverAIReady) && claudeTexts.length >= 1 && !claudePromise)
       claudePromise = claudeExtract(claudeTexts, q, searchType, signal);
 
     let aiEnhanced = false;
@@ -3425,7 +3498,7 @@ function showSavePreview(info, btnId) {
 
         // ── Phase 3: Claude extraction + description ─────────────────────────
         const claudeKey = await getClaudeKey();
-        if (claudeKey && enrichTexts.length >= 1) {
+        if ((claudeKey || _serverAIReady) && enrichTexts.length >= 1) {
           setPhase('AI extracting fields…');
           const claudeFields = await claudeExtract(enrichTexts, name, facilityType, signal).catch(() => ({}));
           if (!modal.classList.contains('show')) return;
@@ -3529,7 +3602,7 @@ async function handleFileRaw(file) {
   }
 
   // Extract fields directly from file text
-  const dummy = new DOMParser().parseFromString('<pre>' + display.replace(/</g,'&lt;') + '</pre>', 'text/html');
+  const dummy = new DOMParser().parseFromString('<pre>' + display.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</pre>', 'text/html');
   const fileFields = extractFields(dummy, display);
   const searchType = document.getElementById('search-type')?.value || 'farm';
   const filteredFileFields = filterFieldsByType(fileFields, searchType);
@@ -3747,7 +3820,7 @@ async function textExtract() {
   }
 
   // Extract fish farm fields from the pasted text using a dummy doc
-  const dummy = new DOMParser().parseFromString('<pre>' + text.replace(/</g,'&lt;') + '</pre>', 'text/html');
+  const dummy = new DOMParser().parseFromString('<pre>' + text.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</pre>', 'text/html');
   const fields = extractFields(dummy, text);
 
   const frag = document.createDocumentFragment();
@@ -4252,7 +4325,11 @@ function renderSaved() {
 function clearSaved() {
   if (!confirm(`Delete all ${saved.length} saved record${saved.length !== 1 ? 's' : ''}? This cannot be undone.`)) return;
   saved = [];
+  // Clear all three persistence layers in parallel so no stale records survive a
+  // cold-start migration (IDB records → SQLite) or a localStorage fallback path.
   if (window.AppSQLite) AppSQLite.clearAll().catch(() => {});
+  if (window.AppIDB)    AppIDB.putAllRecords([]).catch(() => {});
+  localStorage.removeItem('ship_saved3');
   persist();
   updateSavedBadge();
   updateStats();
@@ -4527,8 +4604,8 @@ async function runSQLQuery() {
   if (!sql) return;
   if (!window.AppSQLite) { out.innerHTML = '<div class="sql-err">SQLite not initialised</div>'; return; }
 
-  // Block destructive statements
-  if (/^\s*(drop|delete|truncate|alter|attach|detach)\b/i.test(sql)) {
+  // Block all data-modifying and DDL statements — read-only panel
+  if (/^\s*(drop|delete|truncate|alter|attach|detach|insert|update|replace|create)\b/i.test(sql)) {
     out.innerHTML = '<div class="sql-err">Only SELECT queries are permitted in this panel.</div>';
     return;
   }

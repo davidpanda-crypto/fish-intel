@@ -518,6 +518,9 @@
     }
     _db    = new _SQL.Database(new Uint8Array(arrayBuffer));
     _ready = true;
+    // Run SCHEMA to add any tables/columns that are missing in the imported DB
+    // (handles files exported from an older version of the app).
+    _db.run(SCHEMA);
     await _persist();
     return true;
   }
