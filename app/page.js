@@ -1,0 +1,398 @@
+'use client';
+
+import Script from 'next/script';
+
+/**
+ * Main page — thin React shell around the existing vanilla JS app.
+ *
+ * Strategy: dangerouslySetInnerHTML renders the static HTML structure,
+ * Script components load the JS modules in the correct order.
+ * All onclick="..." handlers call global functions defined in app.js.
+ * React manages only the outer shell; app.js owns the DOM after load.
+ */
+export default function FishIntelApp() {
+  return (
+    <>
+      {/* ── Module scripts — load before app.js ── */}
+      <Script src="/js/modules/idb.js"      strategy="beforeInteractive" />
+      <Script src="/js/modules/router.js"   strategy="beforeInteractive" />
+      <Script src="/js/modules/cache.js"    strategy="beforeInteractive" />
+      <Script src="/js/modules/directus.js" strategy="beforeInteractive" />
+      <Script src="/js/modules/sqlite.js"   strategy="beforeInteractive" />
+      <Script src="/js/app.js"              strategy="afterInteractive"  />
+
+      {/* ── App HTML — rendered server-side, taken over by app.js on load ── */}
+      <div dangerouslySetInnerHTML={{ __html: APP_BODY }} />
+    </>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   APP BODY — full HTML from index.html (scripts stripped, loaded above)
+   dangerouslySetInnerHTML preserves onclick="..." attributes so app.js
+   global functions are called correctly.
+───────────────────────────────────────────────────────────────────────────── */
+const APP_BODY = `
+<!-- ═══ SAVE PREVIEW MODAL ═══ -->
+<div id="sp-modal" role="dialog" aria-modal="true" aria-labelledby="sp-modal-title">
+  <div class="sp-inner">
+    <div class="sp-header">
+      <div>
+        <div class="sp-title" id="sp-modal-title">Review &amp; Edit Before Saving</div>
+        <div class="sp-sub">All fields are editable — correct or add anything before confirming.</div>
+      </div>
+      <button class="sp-close" aria-label="Close" onclick="closeSavePreview()">✕</button>
+    </div>
+    <div id="sp-content"></div>
+    <div class="sp-actions">
+      <button class="btn btn-ghost btn-sm" onclick="closeSavePreview()">Cancel</button>
+      <button class="btn btn-blue" onclick="confirmSavePreview()">✓ Save Record</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ LIGHTBOX ═══ -->
+<div id="lightbox" role="dialog" aria-label="Image viewer" onclick="closeLightbox()">
+  <img id="lb-img" src="" alt="">
+  <div id="lb-caption"></div>
+</div>
+
+<!-- ═══ TOAST ═══ -->
+<div id="toast" aria-live="polite" aria-atomic="true"></div>
+
+<!-- ═══ AI SETTINGS MODAL ═══ -->
+<div id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+  <div class="settings-inner">
+    <div class="settings-hdr">
+      <div>
+        <div class="settings-title" id="settings-title">AI &amp; Integration Settings</div>
+        <div class="settings-sub">Configure your AI provider (Claude or Qwen32B on DGX Spark) and Directus sync.</div>
+      </div>
+      <button class="sp-close" aria-label="Close settings" onclick="closeSettings()">✕</button>
+    </div>
+    <div class="settings-body">
+      <!-- Claude fallback key — only needed when running without a server -->
+      <div class="settings-section">
+        <label class="settings-label" for="claude-key-input">Anthropic API Key <span style="font-weight:400;text-transform:none;letter-spacing:0">(browser fallback — not needed when running via Next.js)</span></label>
+        <div class="settings-key-row">
+          <input type="password" id="claude-key-input" placeholder="sk-ant-api03-…" autocomplete="off" spellcheck="false">
+          <button class="btn btn-blue btn-sm" onclick="saveClaudeKey()">Save Key</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearClaudeKey()">Clear</button>
+        </div>
+        <p class="settings-hint">When running via <code>npm run dev</code> or deployed on Vercel, set <code>ANTHROPIC_API_KEY</code> in <code>.env.local</code> — no browser key needed. <a href="https://console.anthropic.com" target="_blank" rel="noopener noreferrer">Get a key →</a></p>
+      </div>
+      <div class="settings-section">
+        <label class="settings-label" for="claude-model-sel">Claude Model (browser fallback)</label>
+        <select id="claude-model-sel" class="ctrl-sel" style="width:100%">
+          <option value="claude-3-5-haiku-20241022">claude-3-5-haiku — Fast &amp; cheap (Recommended)</option>
+          <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet — Balanced accuracy</option>
+          <option value="claude-opus-4-5">claude-opus-4 — Highest accuracy, slower</option>
+        </select>
+      </div>
+      <div id="claude-status" class="settings-section"></div>
+      <!-- Directus -->
+      <div class="settings-divider"></div>
+      <div class="settings-section">
+        <label class="settings-label">Directus Integration</label>
+        <p class="settings-hint" style="margin-bottom:10px">Sync saved records to Directus. Set <code>DIRECTUS_URL</code> + <code>DIRECTUS_TOKEN</code> in <code>.env.local</code> to keep the token server-side. Or enter credentials here for direct browser sync.</p>
+        <label class="settings-label" for="directus-url-input" style="margin-top:4px">Instance URL</label>
+        <input type="url" id="directus-url-input" placeholder="https://your-directus.io" autocomplete="off" spellcheck="false" style="width:100%;margin-bottom:8px">
+        <label class="settings-label" for="directus-token-input">Static Token</label>
+        <div class="settings-key-row">
+          <input type="password" id="directus-token-input" placeholder="Paste token…" autocomplete="off" spellcheck="false">
+          <button class="btn btn-blue btn-sm" onclick="saveDirectusSettings()">Connect</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearDirectusSettings()">Clear</button>
+        </div>
+        <div id="directus-status" style="margin-top:10px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ SITE HEADER ═══ -->
+<header class="site-hdr" role="banner">
+  <div class="site-hdr-inner">
+    <div class="hdr-brand">
+      <div class="hdr-title">Fish Farm &amp; Ship Intelligence</div>
+      <div class="hdr-sub">Research fish farms, mills &amp; vessels — locations, species, certifications, maritime records, and more</div>
+    </div>
+    <div class="hdr-stats" aria-label="Session statistics">
+      <div class="hs"><span class="hs-v" id="s-searches">0</span><div class="hs-l">Searches</div></div>
+      <div class="hs"><span class="hs-v" id="s-ships">0</span><div class="hs-l">Records</div></div>
+      <div class="hs"><span class="hs-v" id="s-images">0</span><div class="hs-l">Images</div></div>
+    </div>
+    <button class="ai-fab" id="ai-fab" onclick="openSettings()" aria-label="AI settings" title="Configure AI provider">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07M8.46 8.46a5 5 0 0 0 0 7.07"/></svg>
+      AI
+      <span class="claude-dot" id="claude-dot" style="display:none" title="AI active"></span>
+    </button>
+  </div>
+  <div class="site-subhdr">
+    <div class="site-subhdr-inner"><span id="dateline-date"></span></div>
+  </div>
+</header>
+
+<!-- ═══ APP SHELL ═══ -->
+<div id="app">
+
+  <!-- ═══ TOOL PANEL ═══ -->
+  <div class="tool-panel">
+
+    <!-- Mode tabs -->
+    <div class="tab-wrap">
+    <div class="mode-strip" role="tablist" aria-label="Input mode">
+      <button class="mode-btn active" id="mbtn-search" role="tab" aria-selected="true"  aria-controls="mode-search" onclick="setMode('search')">Search by Name</button>
+      <button class="mode-btn" id="mbtn-url"    role="tab" aria-selected="false" aria-controls="mode-url"    onclick="setMode('url')">Scrape URL</button>
+      <button class="mode-btn" id="mbtn-file"   role="tab" aria-selected="false" aria-controls="mode-file"   onclick="setMode('file')">Upload File</button>
+      <button class="mode-btn" id="mbtn-text"   role="tab" aria-selected="false" aria-controls="mode-text"   onclick="setMode('text')">Paste Text</button>
+      <button class="mode-btn" id="mbtn-bulk"   role="tab" aria-selected="false" aria-controls="mode-bulk"   onclick="setMode('bulk')">Bulk Lookup</button>
+    </div>
+    </div>
+
+    <!-- SEARCH mode -->
+    <div class="mode-body" id="mode-search" role="tabpanel" aria-labelledby="mbtn-search">
+      <div class="search-config">
+        <div class="ctrl-group">
+          <span class="ctrl-lbl">Facility Type</span>
+          <select id="search-type" class="ctrl-sel" aria-label="Facility type">
+            <option value="farm" selected>Fish Farm / Aquaculture</option>
+            <option value="mill">Fish Mill / Processing Plant</option>
+            <option value="vessel">Shipping / Fishing Vessel</option>
+            <option value="general">General / Auto-detect</option>
+          </select>
+        </div>
+        <button class="filter-toggle-btn" id="filter-toggle" onclick="toggleFilters()">Filters ▾</button>
+      </div>
+      <div class="filter-row" id="filter-row" hidden>
+        <div class="ctrl-group">
+          <span class="ctrl-lbl">Year From</span>
+          <select id="year-from" class="ctrl-sel" aria-label="Year from"></select>
+        </div>
+        <div class="ctrl-group">
+          <span class="ctrl-lbl">Year To</span>
+          <select id="year-to" class="ctrl-sel" aria-label="Year to"></select>
+        </div>
+        <div class="ctrl-group">
+          <span class="ctrl-lbl">Category</span>
+          <select id="cat-filter" class="ctrl-sel" aria-label="Category filter"></select>
+        </div>
+      </div>
+      <div class="search-bar">
+        <input type="text" id="main-search" aria-label="Search query"
+               placeholder="Farm or mill name, vessel name, or 7-digit IMO number…"
+               autocomplete="off" maxlength="200">
+        <button id="search-btn" class="search-go" onclick="runBot()">Search</button>
+        <button class="btn-cancel" id="cancel-btn" onclick="cancelSearch()">✕ Cancel</button>
+      </div>
+      <p class="search-tip">Try: <button class="search-sug" onclick="fillSearch('Mowi ASA')">"Mowi ASA"</button> · <button class="search-sug" onclick="fillSearch('Leroy Seafood')">"Leroy Seafood"</button> · <button class="search-sug" onclick="fillSearch('Atlantic Dawn')">"Atlantic Dawn"</button> · or a 7-digit IMO number</p>
+    </div>
+
+    <!-- SCRAPE URL mode -->
+    <div class="mode-body" id="mode-url" role="tabpanel" aria-labelledby="mbtn-url" hidden>
+      <div class="upload-hint">Paste up to three URLs — primary source, a comparison, and a verification page — scraped in parallel and cross-referenced automatically.</div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+        <div class="ctrl-group">
+          <span class="ctrl-lbl">URL 1 <span style="color:var(--mut3);font-weight:400;font-size:11px">primary source</span></span>
+          <input type="url" id="url-input-1" placeholder="https://www.marinetraffic.com/…" maxlength="500"
+                 aria-label="Primary URL" onkeydown="if(event.key==='Enter'&&!isRunning)scrapeURL()">
+        </div>
+        <div class="ctrl-group">
+          <span class="ctrl-lbl">URL 2 <span style="color:var(--mut3);font-weight:400;font-size:11px">comparison source</span></span>
+          <input type="url" id="url-input-2" placeholder="https://www.vesselfinder.com/…" maxlength="500"
+                 aria-label="Comparison URL" onkeydown="if(event.key==='Enter'&&!isRunning)scrapeURL()">
+        </div>
+        <div class="ctrl-group">
+          <span class="ctrl-lbl">URL 3 <span style="color:var(--mut3);font-weight:400;font-size:11px">verification source</span></span>
+          <input type="url" id="url-input-3" placeholder="https://www.equasis.org/…" maxlength="500"
+                 aria-label="Verification URL" onkeydown="if(event.key==='Enter'&&!isRunning)scrapeURL()">
+        </div>
+      </div>
+      <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px">
+        <div class="tgl-row" style="margin:0">
+          <button class="tgl on" id="opt-imgs-tgl" role="switch" aria-checked="true" aria-label="Fetch images"
+                  onclick="this.classList.toggle('on');this.setAttribute('aria-checked',this.classList.contains('on'));document.getElementById('opt-imgs').checked=this.classList.contains('on')"></button>
+          <span class="tgl-lbl">Fetch images</span>
+          <input type="checkbox" id="opt-imgs" checked style="display:none">
+        </div>
+        <div class="tgl-row" style="margin:0">
+          <button class="tgl on" id="opt-fao-tgl" role="switch" aria-checked="true" aria-label="Include FAO registry"
+                  onclick="this.classList.toggle('on');this.setAttribute('aria-checked',this.classList.contains('on'));document.getElementById('opt-fao').checked=this.classList.contains('on')"></button>
+          <span class="tgl-lbl">Include FAO registry</span>
+          <input type="checkbox" id="opt-fao" checked style="display:none">
+        </div>
+        <div class="tgl-row" style="margin:0">
+          <button class="tgl" id="opt-trans-tgl" role="switch" aria-checked="false" aria-label="Auto-translate"
+                  onclick="this.classList.toggle('on');this.setAttribute('aria-checked',this.classList.contains('on'));document.getElementById('opt-trans').checked=this.classList.contains('on')"></button>
+          <span class="tgl-lbl">Auto-translate</span>
+          <input type="checkbox" id="opt-trans" style="display:none">
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:0">
+        <button class="btn btn-blue" onclick="scrapeURL()">Scrape Page</button>
+        <button class="btn btn-ghost btn-sm" id="url-cancel-btn" onclick="cancelSearch()">✕ Cancel</button>
+      </div>
+    </div>
+
+    <!-- UPLOAD FILE mode -->
+    <div class="mode-body" id="mode-file" role="tabpanel" aria-labelledby="mbtn-file" hidden>
+      <div class="upload-hint">Drop any document and the bot extracts every useful field — names, locations, species, capacities, certifications, and more.</div>
+      <div class="dropzone" id="dz" role="button" tabindex="0" aria-label="File upload area — click or drop a file"
+           onclick="document.getElementById('fi').click()"
+           onkeydown="if(event.key==='Enter'||event.key===' ')document.getElementById('fi').click()"
+           ondragover="dzOver(event)" ondragleave="dzLeave()" ondrop="dzDrop(event)">
+        <div class="dz-icon">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="12" y1="18" x2="12" y2="12"/>
+            <polyline points="9 15 12 12 15 15"/>
+          </svg>
+        </div>
+        <div class="dz-title">Drop a file here, or click to browse</div>
+        <div class="dz-sub">PDF · Word · Excel · CSV · TXT · JSON · XML</div>
+      </div>
+      <input type="file" id="fi" style="display:none"
+             accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.json,.xml,.log"
+             onchange="handleFile(event)">
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn btn-blue" id="file-extract-btn" disabled onclick="extractFileData()">Extract Data</button>
+        <button class="btn btn-ghost btn-sm" onclick="clearFileSelection()">Clear</button>
+      </div>
+      <div class="tgl-row">
+        <button class="tgl on" id="tgl-ft" role="switch" aria-checked="true" aria-label="Auto-translate to English"
+                onclick="this.classList.toggle('on');this.setAttribute('aria-checked',this.classList.contains('on'))"></button>
+        <span class="tgl-lbl">Auto-translate to English</span>
+      </div>
+      <div class="label" style="margin-top:14px">Search keyword in file</div>
+      <div class="kw-row">
+        <input type="text" id="file-kw" placeholder="e.g. salmon, FCR, certification, capacity, harvest" maxlength="100">
+        <button class="btn btn-ghost btn-sm" onclick="fileSearch()">Search</button>
+      </div>
+      <div id="file-out"></div>
+    </div>
+
+    <!-- PASTE TEXT mode -->
+    <div class="mode-body" id="mode-text" role="tabpanel" aria-labelledby="mbtn-text" hidden>
+      <div class="upload-hint">Paste any document text and the bot pulls out names, locations, species, certifications, and production figures.</div>
+      <textarea id="txt-in" rows="8" maxlength="50000"
+        placeholder="Paste any text here — inspection reports, certifications, harvest logs, lab results, or any document..."></textarea>
+      <div class="tgl-row">
+        <button class="tgl on" id="tgl-tt" role="switch" aria-checked="true" aria-label="Auto-translate to English"
+                onclick="this.classList.toggle('on');this.setAttribute('aria-checked',this.classList.contains('on'))"></button>
+        <span class="tgl-lbl">Auto-translate to English</span>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-blue" onclick="textExtract()">Extract Data</button>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('txt-in').value=''">Clear</button>
+      </div>
+      <div id="txt-out"></div>
+    </div>
+
+    <!-- BULK LOOKUP mode -->
+    <div class="mode-body" id="mode-bulk" role="tabpanel" aria-labelledby="mbtn-bulk" hidden>
+      <div class="upload-hint">One name per line — the bot searches each one and builds a results table you can export to CSV or JSON.</div>
+      <textarea id="bulk-in" rows="7" maxlength="10000"
+        placeholder="Mowi ASA&#10;Leroy Seafood&#10;Skretting&#10;Marine Harvest&#10;Cooke Aquaculture"></textarea>
+      <div class="btn-row">
+        <button class="btn btn-blue" onclick="doBulk()">Run Bulk Lookup</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportCSV(bulkRes,'bulk.csv')">Export CSV</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportJSON(bulkRes,'bulk.json')">Export JSON</button>
+      </div>
+      <div id="bulk-prog" style="display:none">
+        <div class="prog-bar" style="margin-top:12px"><div class="prog-fill" id="bulk-bar" style="width:0%"></div></div>
+        <div class="bulk-status" id="bulk-txt">Processing…</div>
+      </div>
+      <div id="bulk-out"></div>
+    </div>
+
+  </div><!-- /tool-panel -->
+
+  <!-- ═══ RESULTS ═══ -->
+  <div id="bot-output"></div>
+
+  <!-- ═══ SAVED RECORDS ═══ -->
+  <section class="saved-section" aria-label="Saved records">
+    <div class="saved-hdr">
+      <div class="saved-hdr-title">
+        Saved Records
+        <span class="saved-count-badge" id="saved-badge">0</span>
+      </div>
+      <div class="saved-hdr-actions">
+        <button class="btn btn-ghost btn-sm" onclick="exportCSV(saved,'records.csv')">CSV</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportJSON(saved,'records.json')">JSON</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportExcel(saved,'records.xlsx')">Excel</button>
+        <button class="btn btn-ghost btn-sm" id="sqlite-export-btn" onclick="exportSQLiteDB()" title="Download database as .db file">SQLite ↓</button>
+        <button class="btn btn-ghost btn-sm" id="sqlite-query-toggle" onclick="toggleSQLPanel()" title="Run SQL queries">SQL ⌥</button>
+        <button class="btn btn-red btn-sm" onclick="clearSaved()">Clear All</button>
+      </div>
+    </div>
+    <div class="saved-toolbar" id="saved-toolbar">
+      <input type="text" id="saved-search" placeholder="Filter records…" maxlength="100"
+             aria-label="Filter saved records" oninput="clearTimeout(window._sst);window._sst=setTimeout(renderSaved,220)">
+      <select id="saved-cat" onchange="renderSaved()" class="ctrl-sel" aria-label="Filter by type" style="width:auto">
+        <option value="">All Types</option>
+        <optgroup label="Aquaculture Species">
+          <option value="salmon">Salmon</option>
+          <option value="trout">Trout</option>
+          <option value="shrimp">Shrimp</option>
+          <option value="tilapia">Tilapia</option>
+          <option value="catfish">Catfish</option>
+          <option value="tuna">Tuna</option>
+          <option value="cod">Cod</option>
+          <option value="sea bass">Sea Bass</option>
+          <option value="carp">Carp</option>
+          <option value="oyster">Oyster</option>
+          <option value="processing">Processing</option>
+        </optgroup>
+        <optgroup label="Fishing Vessel Types">
+          <option value="trawler">Trawler</option>
+          <option value="longliner">Longliner</option>
+          <option value="purse seiner">Purse Seiner</option>
+          <option value="gillnetter">Gillnetter</option>
+          <option value="factory vessel">Factory Vessel</option>
+          <option value="reefer carrier">Reefer Carrier</option>
+          <option value="squid jigger">Squid Jigger</option>
+        </optgroup>
+      </select>
+      <select id="saved-sort" onchange="renderSaved()" class="ctrl-sel" aria-label="Sort order" style="width:auto">
+        <option value="date-desc">Newest first</option>
+        <option value="date-asc">Oldest first</option>
+        <option value="name-asc">Name A–Z</option>
+        <option value="name-desc">Name Z–A</option>
+      </select>
+      <div class="view-toggle">
+        <button class="vt-btn active" id="vt-cards" onclick="setView('cards')">Cards</button>
+        <button class="vt-btn" id="vt-table" onclick="setView('table')">Table</button>
+      </div>
+      <span id="saved-count-lbl" class="saved-count-lbl"></span>
+    </div>
+
+    <!-- SQLite query panel -->
+    <div id="sql-panel" class="sql-panel" hidden>
+      <div class="sql-panel-hdr">
+        <span class="sql-panel-title">SQL Query</span>
+        <span class="sql-panel-hint">Query your local database — <code>SELECT * FROM entities LIMIT 20</code></span>
+        <button class="sp-close" onclick="toggleSQLPanel()" aria-label="Close SQL panel">✕</button>
+      </div>
+      <div class="sql-input-row">
+        <textarea id="sql-input" class="sql-textarea" rows="3" spellcheck="false"
+          placeholder="SELECT * FROM entities ORDER BY saved_at DESC LIMIT 20"></textarea>
+        <button class="btn btn-blue btn-sm" onclick="runSQLQuery()">Run</button>
+      </div>
+      <div class="sql-shortcuts">
+        <button class="search-sug" onclick="setSQLQuery('SELECT * FROM entities ORDER BY saved_at DESC LIMIT 50')">All entities</button>
+        <button class="search-sug" onclick="setSQLQuery(&quot;SELECT * FROM entities WHERE entity_type = 'farm' ORDER BY country&quot;)">Farms by country</button>
+        <button class="search-sug" onclick="setSQLQuery(&quot;SELECT * FROM entities WHERE entity_type = 'vessel' AND imo IS NOT NULL&quot;)">Vessels with IMO</button>
+        <button class="search-sug" onclick="setSQLQuery('SELECT species_name, COUNT(*) as count FROM entity_species GROUP BY species_name ORDER BY count DESC')">Species frequency</button>
+        <button class="search-sug" onclick="setSQLQuery('SELECT * FROM v_entities_full WHERE certification IS NOT NULL')">Certified</button>
+        <button class="search-sug" onclick="setSQLQuery('SELECT query, search_type, result_count, searched_at FROM search_history ORDER BY searched_at DESC LIMIT 30')">Search history</button>
+        <button class="search-sug" onclick="setSQLQuery('SELECT name, country, species, description FROM entities WHERE verified = 1')">Verified only</button>
+      </div>
+      <div id="sql-results" class="sql-results"></div>
+    </div>
+
+    <div id="saved-list"></div>
+  </section>
+
+</div><!-- /app -->
+`;
