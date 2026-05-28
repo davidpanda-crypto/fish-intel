@@ -405,24 +405,60 @@ async function ensureFileLibs() {
    STORAGE — IDB-first, localStorage fallback
 ═══════════════════════════════════════════ */
 async function loadPersistedData() {
-  try {
-    // Migrate any existing localStorage data on first run
-    if (window.AppIDB) await AppIDB.migrateFromLocalStorage();
+  // ── 1. Init SQLite first (reads its binary blob from IDB) ─────────────────
+  let sqliteOk = false;
+  if (window.AppSQLite) {
+    sqliteOk = await AppSQLite.init().catch(() => false);
+  }
 
-    // Load saved records from IDB
-    const records = window.AppIDB ? await AppIDB.getAll('records') : [];
-    if (records.length) {
-      saved = records.sort((a, b) => (b._ts || 0) - (a._ts || 0));
+  // ── 2. Load saved entity records ──────────────────────────────────────────
+  if (sqliteOk) {
+    const rows = await AppSQLite.getAllEntities();
+    if (rows.length) {
+      // Primary path: hydrate saved[] directly from SQLite
+      saved = rows.map(AppSQLite.rowToRecord);
+      console.info(`[Storage] Loaded ${saved.length} records from SQLite`);
     } else {
-      // IDB empty — check localStorage fallback
+      // SQLite is empty — migrate from legacy IDB records or localStorage
+      let legacy = [];
+      try {
+        if (window.AppIDB) {
+          await AppIDB.migrateFromLocalStorage();
+          legacy = await AppIDB.getAll('records');
+        }
+        if (!legacy.length) {
+          legacy = JSON.parse(localStorage.getItem('ship_saved3') || '[]');
+        }
+        legacy = legacy.map(r => (r.id ? r : { ...r, id: r._id }));
+      } catch {}
+
+      if (legacy.length) {
+        saved = legacy;
+        const n = await AppSQLite.batchUpsert(saved);
+        console.info(`[Storage] Migrated ${n} records → SQLite`);
+      }
+    }
+  } else {
+    // SQLite unavailable — fall back to IDB records then localStorage
+    console.warn('[Storage] SQLite unavailable, falling back to IDB');
+    try {
+      if (window.AppIDB) await AppIDB.migrateFromLocalStorage();
+      const records = window.AppIDB ? await AppIDB.getAll('records') : [];
+      if (records.length) {
+        saved = records.sort((a, b) => (b._ts || 0) - (a._ts || 0));
+      } else {
+        try { saved = JSON.parse(localStorage.getItem('ship_saved3') || '[]'); } catch {}
+      }
+      saved = saved.map(r => (r.id ? r : { ...r, id: r._id }));
+    } catch {
       try { saved = JSON.parse(localStorage.getItem('ship_saved3') || '[]'); } catch {}
     }
-    // Ensure every record has id (IDB keyPath) — backfill from _id for old records
-    saved = saved.map(r => (r.id ? r : { ...r, id: r._id }));
+  }
 
-    // Load knowledge base from IDB
+  // ── 3. Knowledge base + proxy health — always from IDB (not in SQLite) ───
+  try {
     const kEntry = window.AppIDB ? await AppIDB.get('knowledge', 'learned') : null;
-    if (kEntry && kEntry.data) {
+    if (kEntry?.data) {
       learned     = kEntry.data.learned     || {};
       domainStats = kEntry.data.domainStats || {};
     } else {
@@ -431,10 +467,11 @@ async function loadPersistedData() {
         learned = ld.learned || {}; domainStats = ld.domainStats || {};
       } catch {}
     }
+  } catch {}
 
-    // Load proxy health from IDB
+  try {
     const pfEntry = window.AppIDB ? await AppIDB.get('knowledge', 'pfails') : null;
-    if (pfEntry && pfEntry.data) {
+    if (pfEntry?.data) {
       Object.entries(pfEntry.data).forEach(([k, v]) => proxyFails.set(k, v));
     } else {
       try {
@@ -442,11 +479,7 @@ async function loadPersistedData() {
         Object.entries(pf).forEach(([k, v]) => proxyFails.set(k, v));
       } catch {}
     }
-  } catch (e) {
-    console.warn('[Storage] Load error, using defaults:', e);
-    // Hard fallback to localStorage
-    try { saved = JSON.parse(localStorage.getItem('ship_saved3') || '[]'); } catch {}
-  }
+  } catch {}
 }
 
 /* ═══════════════════════════════════════════
@@ -560,14 +593,7 @@ window.addEventListener('load', async () => {
   // 4. Init Directus connection (loads saved creds from IDB)
   initDirectus();
 
-  // 5. Init SQLite — lazy, runs in background; bulk-imports any existing records
-  if (window.AppSQLite) {
-    AppSQLite.init().then(ok => {
-      if (ok && saved.length) AppSQLite.bulkImport(saved);
-    });
-  }
-
-  // 6. Register service worker for offline + asset caching
+  // 5. Register service worker for offline + asset caching
   if ('serviceWorker' in navigator) {
     // Use relative path so it works on any base (localhost, GitHub Pages /fish-intel/, etc.)
     navigator.serviceWorker.register('sw.js', { scope: './' }).catch(e =>
@@ -4027,11 +4053,6 @@ function doSave(info, btnId) {
   updateStats();
   toast('Saved: ' + (info.name || info.vessel_name || info.farm_name || key || 'Record'));
 
-  // Sync to SQLite (fire-and-forget)
-  if (window.AppSQLite) {
-    AppSQLite.upsert(record).catch(() => {});
-  }
-
   // Sync to Directus (fire-and-forget — never blocks local save)
   if (window.Directus?.isConfigured()) {
     const query      = info.name || info.vessel_name || info.farm_name || key;
@@ -4231,6 +4252,7 @@ function renderSaved() {
 function clearSaved() {
   if (!confirm(`Delete all ${saved.length} saved record${saved.length !== 1 ? 's' : ''}? This cannot be undone.`)) return;
   saved = [];
+  if (window.AppSQLite) AppSQLite.clearAll().catch(() => {});
   persist();
   updateSavedBadge();
   updateStats();
@@ -4238,14 +4260,20 @@ function clearSaved() {
 }
 
 async function persist() {
-  try {
-    if (window.AppIDB) {
-      await AppIDB.putAllRecords(saved);
-    } else {
-      localStorage.setItem('ship_saved3', JSON.stringify(saved));
+  // Primary: SQLite — one transaction, one IDB binary write
+  if (window.AppSQLite) {
+    try {
+      await AppSQLite.batchUpsert(saved);
+      return;
+    } catch (e) {
+      console.warn('[persist] SQLite write failed, falling back:', e.message);
     }
-  } catch (e) {
-    // IDB failed — try localStorage as fallback
+  }
+  // Fallback: legacy IDB records store or localStorage
+  try {
+    if (window.AppIDB) await AppIDB.putAllRecords(saved);
+    else localStorage.setItem('ship_saved3', JSON.stringify(saved));
+  } catch {
     try { localStorage.setItem('ship_saved3', JSON.stringify(saved)); }
     catch { toast('Warning: could not save — storage unavailable.'); }
   }
