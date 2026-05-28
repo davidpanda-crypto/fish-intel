@@ -11,6 +11,7 @@ export async function DELETE(request, { params }) {
   try {
     const { id } = await params;
     const db     = getDB();
+    if (!db) return NextResponse.json({ ok: false, error: 'DB unavailable' }, { status: 503 });
     db.prepare('DELETE FROM entities WHERE local_id = ?').run(id);
     return NextResponse.json({ ok: true });
   } catch (e) {
@@ -23,6 +24,7 @@ export async function PATCH(request, { params }) {
     const { id }  = await params;
     const patch   = await request.json();
     const db      = getDB();
+    if (!db) return NextResponse.json({ ok: false, error: 'DB unavailable' }, { status: 503 });
     const allowed = ['notes', 'verified', 'description', 'certification', 'species', 'directus_id'];
     const sets    = [];
     const args    = [];

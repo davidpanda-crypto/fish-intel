@@ -9,7 +9,8 @@ import { getDB, upsertEntity, batchUpsertEntities } from '../../../../lib/db.js'
 
 export async function GET(request) {
   try {
-    const db      = getDB();
+    const db = getDB();
+    if (!db) return NextResponse.json({ ok: false, error: 'DB unavailable' }, { status: 503 });
     const { searchParams } = new URL(request.url);
     const limit   = Math.min(parseInt(searchParams.get('limit')  || '500', 10), 2000);
     const type    = searchParams.get('type')   || null;
@@ -38,6 +39,7 @@ export async function GET(request) {
 
 export async function POST(request) {
   try {
+    if (!getDB()) return NextResponse.json({ ok: false, error: 'DB unavailable' }, { status: 503 });
     const body = await request.json();
     // Accept a single record or an array
     const records = Array.isArray(body) ? body : [body];

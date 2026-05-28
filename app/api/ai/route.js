@@ -9,6 +9,9 @@
 
 import { NextResponse } from 'next/server';
 
+// Vercel: Hobby = 10 s hard cap (will warn), Pro = up to 60 s.
+export const maxDuration = 60;
+
 export async function POST(request) {
   let body;
   try { body = await request.json(); }

@@ -6,6 +6,10 @@
 
 import { NextResponse } from 'next/server';
 
+// Vercel: Hobby = 10 s hard cap (will warn), Pro = up to 60 s.
+// Set to 60 so the route works properly on Pro / self-hosted.
+export const maxDuration = 60;
+
 const USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
