@@ -6,6 +6,7 @@ export async function GET() {
       claude: !!process.env.ANTHROPIC_API_KEY,
       qwen:   !!process.env.QWEN_ENDPOINT,
     },
-    directus: !!process.env.DIRECTUS_URL,
+    // directus disabled — uncomment when re-enabling sync
+    // directus: !!process.env.DIRECTUS_URL,
   });
 }

@@ -17,7 +17,8 @@ export default function FishIntelApp() {
       <Script src="/js/modules/idb.js"      strategy="beforeInteractive" />
       <Script src="/js/modules/router.js"   strategy="beforeInteractive" />
       <Script src="/js/modules/cache.js"    strategy="beforeInteractive" />
-      <Script src="/js/modules/directus.js" strategy="beforeInteractive" />
+      {/* Directus disabled — uncomment to re-enable sync */}
+      {/* <Script src="/js/modules/directus.js" strategy="beforeInteractive" /> */}
       <Script src="/js/modules/sqlite.js"   strategy="beforeInteractive" />
       <Script src="/js/app.js"              strategy="afterInteractive"  />
 
@@ -65,8 +66,8 @@ const APP_BODY = `
   <div class="settings-inner">
     <div class="settings-hdr">
       <div>
-        <div class="settings-title" id="settings-title">AI &amp; Integration Settings</div>
-        <div class="settings-sub">Configure your AI provider (Claude or Qwen32B on DGX Spark) and Directus sync.</div>
+        <div class="settings-title" id="settings-title">AI Settings</div>
+        <div class="settings-sub">Configure your AI provider (Claude or Qwen32B on DGX Spark).</div>
       </div>
       <button class="sp-close" aria-label="Close settings" onclick="closeSettings()">✕</button>
     </div>
@@ -90,7 +91,7 @@ const APP_BODY = `
         </select>
       </div>
       <div id="claude-status" class="settings-section"></div>
-      <!-- Directus -->
+      <!-- Directus section disabled — uncomment to re-enable sync
       <div class="settings-divider"></div>
       <div class="settings-section">
         <label class="settings-label">Directus Integration</label>
@@ -105,6 +106,7 @@ const APP_BODY = `
         </div>
         <div id="directus-status" style="margin-top:10px"></div>
       </div>
+      -->
     </div>
   </div>
 </div>

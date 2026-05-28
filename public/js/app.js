@@ -591,8 +591,8 @@ window.addEventListener('load', async () => {
   updateClaudeHeaderDot();
   detectServerAI(); // fire-and-forget; updates dot again if server AI is found
 
-  // 4. Init Directus connection (loads saved creds from IDB)
-  initDirectus();
+  // 4. Directus disabled — uncomment to re-enable sync
+  // initDirectus();
 
   // 5. Register service worker for offline + asset caching
   if ('serviceWorker' in navigator) {
