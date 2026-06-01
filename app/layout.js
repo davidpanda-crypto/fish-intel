@@ -1,8 +1,8 @@
 import './globals.css';
 
 export const metadata = {
-  title:       'Fish Farm & Ship Intelligence',
-  description: 'Research fish farms, mills & vessels — locations, species, certifications, maritime records',
+  title:       'Website Extractor Tools',
+  description: 'Extract and research data from websites — farms, mills, vessels, locations, certifications, and more',
   robots:      'noindex',
 };
 

@@ -568,8 +568,8 @@ window.addEventListener('load', async () => {
                     mill:'Mill or processing plant name (e.g. Skretting, BioMar, TASA)',
                     vessel:'Vessel name or IMO number (e.g. Atlantic Dawn, 1234567)',
                     general:'Name, IMO, or URL to search' };
-    const titles = { farm:'Fish Farm Intelligence Bot', mill:'Fish Mill Intelligence Bot',
-                     vessel:'Ship & Vessel Scraper', general:'Fish Farm & Ship Scraper' };
+    const titles = { farm:'Fish Farm Extractor', mill:'Fish Mill Extractor',
+                     vessel:'Vessel Data Extractor', general:'Website Extractor Tools' };
     const descs  = {
       farm:   'Enter the name of a fish farm or aquaculture facility. The bot searches OpenStreetMap, Wikipedia, FAO, ASC producer lists, and live web pages to extract location coordinates, species farmed, annual production capacity, water type, certification status (ASC, BAP, GlobalG.A.P.), stocking density, FCR, harvest cycles, and operator details. Only aquaculture-relevant data is returned — vessel or processing-plant fields are excluded.',
       mill:   'Enter the name of a fishmeal or fish oil processing plant. The bot queries industry registries, trade databases, Wikipedia, and web sources to retrieve input species, output products, fishmeal and fish oil percentages, annual processing capacity, feed type, certifications, and country of operation. Results are filtered strictly to processing-plant information.',

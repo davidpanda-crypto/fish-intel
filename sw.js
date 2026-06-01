@@ -1,5 +1,5 @@
 /**
- * Fish Farm & Ship Intelligence — Service Worker
+ * Website Extractor Tools — Service Worker
  * Strategy: Cache-first for app shell, network-first for API calls.
  *
  * Works correctly on any base path (localhost, GitHub Pages /fish-intel/, etc.)

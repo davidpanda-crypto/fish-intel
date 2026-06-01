@@ -115,8 +115,8 @@ const APP_BODY = `
 <header class="site-hdr" role="banner">
   <div class="site-hdr-inner">
     <div class="hdr-brand">
-      <div class="hdr-title">Fish Farm &amp; Ship Intelligence</div>
-      <div class="hdr-sub">Research fish farms, mills &amp; vessels — locations, species, certifications, maritime records, and more</div>
+      <div class="hdr-title">Website Extractor Tools</div>
+      <div class="hdr-sub">Extract and research data from any website — farms, mills, vessels, locations, certifications, and more</div>
     </div>
     <div class="hdr-stats" aria-label="Session statistics">
       <div class="hs"><span class="hs-v" id="s-searches">0</span><div class="hs-l">Searches</div></div>
