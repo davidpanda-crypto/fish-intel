@@ -8,16 +8,22 @@
  */
 
 import { NextResponse } from 'next/server';
+import { requireSecret } from '../../../lib/auth.js';
 
 // Vercel: Hobby = 10 s hard cap (will warn), Pro = up to 60 s.
 export const maxDuration = 60;
 
 export async function POST(request) {
+  const authErr = requireSecret(request);
+  if (authErr) return authErr;
+
   let body;
   try { body = await request.json(); }
   catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }); }
 
-  const { system = '', user = '', maxTokens = 800, provider = 'auto' } = body;
+  const { system = '', user = '', provider = 'auto' } = body;
+  // Cap server-side — prevents a client sending maxTokens:100000 to drain API credits
+  const maxTokens = Math.min(Math.max(1, parseInt(body.maxTokens) || 800), 2000);
 
   const hasQwen   = !!process.env.QWEN_ENDPOINT;
   const hasClaude = !!process.env.ANTHROPIC_API_KEY;

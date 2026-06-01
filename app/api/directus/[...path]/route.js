@@ -10,11 +10,19 @@
  */
 
 import { NextResponse } from 'next/server';
+import { requireSecret } from '../../../../lib/auth.js';
 
 const DIRECTUS_URL   = process.env.DIRECTUS_URL?.replace(/\/$/, '');
 const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN;
 
+// Only these top-level Directus paths may be proxied — prevents enumeration
+// of admin endpoints like /users, /roles, /permissions, /settings
+const ALLOWED_PATHS = ['items', 'files', 'assets'];
+
 async function proxy(request, { params }) {
+  const authErr = requireSecret(request, true);
+  if (authErr) return authErr;
+
   if (!DIRECTUS_URL || !DIRECTUS_TOKEN) {
     return NextResponse.json(
       { error: 'Directus not configured — set DIRECTUS_URL and DIRECTUS_TOKEN in .env.local' },
@@ -23,7 +31,14 @@ async function proxy(request, { params }) {
   }
 
   const { path } = await params;
-  const subPath  = Array.isArray(path) ? path.join('/') : path;
+  const segments = Array.isArray(path) ? path : [path];
+
+  // Enforce allowlist on the first path segment
+  if (!ALLOWED_PATHS.includes(segments[0])) {
+    return NextResponse.json({ error: 'Path not allowed' }, { status: 403 });
+  }
+
+  const subPath  = segments.join('/');
   const search   = new URL(request.url).search;
   const target   = `${DIRECTUS_URL}/${subPath}${search}`;
 

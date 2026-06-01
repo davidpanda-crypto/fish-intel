@@ -6,8 +6,11 @@
 
 import { NextResponse }              from 'next/server';
 import { getDB, upsertEntity, batchUpsertEntities } from '../../../../lib/db.js';
+import { requireSecret }             from '../../../../lib/auth.js';
 
 export async function GET(request) {
+  const authErr = requireSecret(request, true); // server-only secret
+  if (authErr) return authErr;
   try {
     const db = getDB();
     if (!db) return NextResponse.json({ ok: false, error: 'DB unavailable' }, { status: 503 });
@@ -38,6 +41,8 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
+  const authErr = requireSecret(request, true);
+  if (authErr) return authErr;
   try {
     if (!getDB()) return NextResponse.json({ ok: false, error: 'DB unavailable' }, { status: 503 });
     const body = await request.json();

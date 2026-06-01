@@ -5,6 +5,7 @@
  */
 
 import { NextResponse } from 'next/server';
+import { requireSecret } from '../../../lib/auth.js';
 
 // Vercel: Hobby = 10 s hard cap (will warn), Pro = up to 60 s.
 // Set to 60 so the route works properly on Pro / self-hosted.
@@ -28,13 +29,21 @@ function validateUrl(url) {
     const u = new URL(url);
     if (!['http:', 'https:'].includes(u.protocol)) return false;
     const h = u.hostname;
-    // Block private/local addresses
+    // Block RFC-1918 private ranges and loopback
     if (/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1|0\.0\.0\.0)/.test(h)) return false;
+    // Block cloud instance metadata endpoints (SSRF)
+    if (/^169\.254\./.test(h)) return false;               // AWS/Azure link-local metadata
+    if (/metadata\.google\.internal$/i.test(h)) return false; // GCP metadata
+    if (/^fd[0-9a-f]{2}:/i.test(h)) return false;          // IPv6 ULA
+    if (/^fe[89ab][0-9a-f]:/i.test(h)) return false;       // IPv6 link-local
     return true;
   } catch { return false; }
 }
 
 export async function POST(request) {
+  const authErr = requireSecret(request);
+  if (authErr) return authErr;
+
   let url;
   try { ({ url } = await request.json()); }
   catch { return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 }); }

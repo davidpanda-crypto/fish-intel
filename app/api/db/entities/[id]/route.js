@@ -6,8 +6,11 @@
 
 import { NextResponse } from 'next/server';
 import { getDB }        from '../../../../../lib/db.js';
+import { requireSecret } from '../../../../../lib/auth.js';
 
 export async function DELETE(request, { params }) {
+  const authErr = requireSecret(request, true);
+  if (authErr) return authErr;
   try {
     const { id } = await params;
     const db     = getDB();
@@ -20,6 +23,8 @@ export async function DELETE(request, { params }) {
 }
 
 export async function PATCH(request, { params }) {
+  const authErr = requireSecret(request, true);
+  if (authErr) return authErr;
   try {
     const { id }  = await params;
     const patch   = await request.json();

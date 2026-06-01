@@ -635,6 +635,10 @@ function fillSearch(q) {
 const CLAUDE_API  = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_VER  = '2023-06-01';
 
+// Shared secret for server API routes — set NEXT_PUBLIC_API_SECRET in .env.local
+// This stops automated scanners; note it is visible in the JS bundle.
+const API_SECRET  = (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_API_SECRET) || '';
+
 // ── Key + model storage ────────────────────────────────────────────────────
 async function getClaudeKey() {
   try {
@@ -791,7 +795,10 @@ let _serverAIReady = false;
 
 async function detectServerAI() {
   try {
-    const r = await fetch('/api/health', { signal: AbortSignal.timeout(3000) });
+    const r = await fetch('/api/health', {
+      signal: AbortSignal.timeout(3000),
+      headers: API_SECRET ? { 'x-api-secret': API_SECRET } : {},
+    });
     if (!r.ok) return;
     const d = await r.json();
     _serverAIReady = !!(d.providers?.claude || d.providers?.qwen);
@@ -808,7 +815,7 @@ async function callClaude(system, user, maxTokens = 800, signal = null) {
   try {
     const r = await fetch('/api/ai', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(API_SECRET ? { 'x-api-secret': API_SECRET } : {}) },
       body: JSON.stringify({ system, user, maxTokens }),
       signal: timedSignal(signal, 35000),
     });
@@ -1037,7 +1044,7 @@ async function fetchViaProxy(url, signal) {
   try {
     const r = await fetch('/api/scrape', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(API_SECRET ? { 'x-api-secret': API_SECRET } : {}) },
       body: JSON.stringify({ url }),
       signal: timedSignal(signal, 22000),
     });
