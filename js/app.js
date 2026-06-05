@@ -1260,6 +1260,97 @@ function highlightIMO(text) {
 }
 
 /* ═══════════════════════════════════════════
+   PAYWALL DETECTION & BYPASS
+═══════════════════════════════════════════ */
+
+/**
+ * Detects subscription/paywall walls — distinct from bot-block pages.
+ * Only flags when paywall signals appear AND content is thin (< 40k chars),
+ * so a site that mentions "subscribe" in a footer doesn't get flagged.
+ */
+function isPaywalled(html) {
+  if (!html || html.length > 40000) return false; // full content → not walled
+  const lc = html.toLowerCase();
+  const WALL_SIGNALS = [
+    'subscribe to read','subscribe to continue','subscribe for full access',
+    'subscribe now to','become a member to read','become a subscriber',
+    'premium content','subscriber only','subscribers only','subscriber-only',
+    'members only','member only','exclusive content',
+    'login to read','sign in to read','log in to read',
+    'register to read','create an account to read',
+    'unlock this article','unlock full access','unlock the full story',
+    'get full access','read the full article','read the full story',
+    'your free articles are up','free article limit','article limit reached',
+    'metered paywall','you\'ve used your free','out of free articles',
+    'continue reading with a subscription','digital subscription',
+  ];
+  return WALL_SIGNALS.some(s => lc.includes(s));
+}
+
+/**
+ * Attempt to retrieve a paywalled or blocked URL via public archive services.
+ * Tries in order: Wayback Machine → archive.ph → 12ft.io → Google Cache.
+ * Returns the first HTML string that is not itself paywalled, or null on total failure.
+ */
+async function tryArchiveFallback(originalUrl, signal) {
+  const enc = encodeURIComponent(originalUrl);
+
+  // 1 ── Wayback Machine (Internet Archive) — most reliable, covers all sites
+  try {
+    // First check the CDX API for the most recent available snapshot
+    const cdxResp = await fetch(
+      `https://archive.org/wayback/available?url=${enc}`,
+      { signal: timedSignal(signal, 7000) }
+    );
+    if (cdxResp.ok) {
+      const cdx = await cdxResp.json();
+      const archiveUrl = cdx?.archived_snapshots?.closest?.url;
+      if (archiveUrl && isValidURL(archiveUrl)) {
+        log('Trying Wayback Machine…', 'info');
+        const html = await fetchViaProxy(archiveUrl, timedSignal(signal, 18000));
+        if (html && !isPaywalled(html) && html.length > 500) {
+          log('✓ Wayback Machine — content retrieved', 'ok');
+          return html;
+        }
+      }
+    }
+  } catch(e) { if (e.name === 'AbortError') throw e; }
+
+  // 2 ── archive.ph (archive.today) — good for news/industry sites
+  try {
+    log('Trying archive.ph…', 'info');
+    const html = await fetchViaProxy(`https://archive.ph/newest/${enc}`, timedSignal(signal, 15000));
+    if (html && !isPaywalled(html) && html.length > 500) {
+      log('✓ archive.ph — content retrieved', 'ok');
+      return html;
+    }
+  } catch(e) { if (e.name === 'AbortError') throw e; }
+
+  // 3 ── 12ft.io — reader-mode proxy, bypasses many soft paywalls
+  try {
+    log('Trying 12ft.io reader proxy…', 'info');
+    const html = await fetchViaProxy(`https://12ft.io/proxy?q=${enc}`, timedSignal(signal, 15000));
+    if (html && !isPaywalled(html) && html.length > 500) {
+      log('✓ 12ft.io — content retrieved', 'ok');
+      return html;
+    }
+  } catch(e) { if (e.name === 'AbortError') throw e; }
+
+  // 4 ── Outline.com — clean reader mode for articles
+  try {
+    log('Trying Outline reader…', 'info');
+    const html = await fetchViaProxy(`https://outline.com/${originalUrl}`, timedSignal(signal, 15000));
+    if (html && !isPaywalled(html) && html.length > 500) {
+      log('✓ Outline — content retrieved', 'ok');
+      return html;
+    }
+  } catch(e) { if (e.name === 'AbortError') throw e; }
+
+  log('All archive fallbacks exhausted', 'warn');
+  return null;
+}
+
+/* ═══════════════════════════════════════════
    PROXY FETCH — with fallback chain & cache
 ═══════════════════════════════════════════ */
 async function fetchViaProxy(url, signal) {
@@ -1357,14 +1448,31 @@ async function fetchViaProxy(url, signal) {
 
         if (text.length < 50) throw new Error('Empty response');
 
-        // Detect block pages (Cloudflare, CAPTCHA, etc.) — flag for 3s wait
         const lc = text.toLowerCase();
-        const blocked = ['access denied','403 forbidden','cloudflare','just a moment',
-          'enable javascript','captcha','robot','are you human','blocked','rate limit']
-          .some(kw => lc.includes(kw) && text.length < 8000);
+
+        // Detect hard bot-blocks (Cloudflare challenge, CAPTCHA) — retry with backoff
+        const blocked = [
+          'access denied','403 forbidden','cloudflare','just a moment',
+          'enable javascript','captcha','robot','are you human','blocked','rate limit',
+          'ddos-guard','ddos protection','verifying you are human',
+        ].some(kw => lc.includes(kw) && text.length < 8000);
         if (blocked) {
           wasKicked = true;
           throw new Error('Block page detected');
+        }
+
+        // Detect soft paywalls — don't retry proxies, try archive services instead
+        if (isPaywalled(text)) {
+          clearTimeout(timeout);
+          log(`Paywall detected at ${new URL(url).hostname} — trying archive fallbacks…`, 'warn');
+          const archived = await tryArchiveFallback(url, signal);
+          if (archived) {
+            reqCacheSet(url, archived);
+            return archived;
+          }
+          // Return the paywalled HTML anyway — field extraction may still get
+          // metadata (title, og:description, schema.org) from the partial content
+          log('Archive fallback failed — using partial paywalled content', 'warn');
         }
 
         reqCacheSet(url, text);
@@ -2507,6 +2615,10 @@ const SOURCE_RANK = [
   'OpenStreetMap',                                                      // verified structured geo data
   'FAO-Global-Record','ITU',                                            // authoritative vessel registries
   'ShipXY','MSA-China',                                                 // Chinese maritime registries
+  // Free flag-state & classification registries
+  'UK-ShipRegister','LISCR-Liberia','RMIRS','Panama-Registry',
+  'DNV-Registry','BureauVeritas','ClassNK','RINA-Registry',
+  'RightShip','Tokyo-MOU','ITF-Seafarers','Paris-MOU',
   'Equasis','MarineTraffic','VesselFinder','FleetMon','MyShipTracking',  // highest for vessel data
 ];
 function sourceRank(id) {
@@ -3178,6 +3290,35 @@ async function runBot() {
         farmAPIResults = vesselLookup.results;
         imo  = vesselLookup.imo  || imo;
         mmsi = vesselLookup.mmsi || mmsi;
+
+        // Free flag-state registries — alternatives to paywalled Lloyd's/DNV
+        // These have the same ownership, class, and flag data, available without subscription
+        scraperURLs.push(
+          // UK Ship Register (MCA) — free, covers UK-flagged vessels
+          { id:'UK-ShipRegister',  url:`https://www.gov.uk/check-a-ship-registry?vessel=${encodeURIComponent(q)}` },
+          // Liberia LISCR — one of the world's largest flags, free lookup
+          { id:'LISCR-Liberia',    url:`https://www.liscr.com/vessel-search?q=${encodeURIComponent(q)}` },
+          // Marshall Islands — major flag state, free registry
+          { id:'RMIRS',            url:`https://www.register-iri.com/vessel-information/?vessel=${encodeURIComponent(q)}` },
+          // Panama Maritime — world's largest flag, free search
+          { id:'Panama-Registry',  url:`https://www.amp.gob.pa/consulta-naves/?nombre=${encodeURIComponent(q)}`, _lang:'es' },
+          // ITF (International Transport Workers' Federation) — free crew/flag data
+          { id:'ITF-Seafarers',    url:`https://www.itf.org.uk/transport-workers/maritime/flags-of-convenience/flag-state-performance/` },
+          // Rightship Safety Rating — free tier
+          { id:'RightShip',        url:`https://rightship.com/vessel-search/?query=${encodeURIComponent(q)}` },
+          // Tokyo MOU Port State Control — Asia-Pacific detentions, free
+          { id:'Tokyo-MOU',        url:`https://www.tokyo-mou.org/inspections_detentions/ship.php?search=${encodeURIComponent(q)}` },
+        );
+        if (imo) scraperURLs.push(
+          // DNV Vessel Finder — free basic vessel info by IMO
+          { id:'DNV-Registry',     url:`https://www.dnv.com/services/vessel-register-search-14823/search/?imo=${imo}` },
+          // Bureau Veritas Register — free basic data
+          { id:'BureauVeritas',    url:`https://www.veristar.com/portal/veristarinfo/SearchResult?imo=${imo}` },
+          // ClassNK — Japanese classification society, free search
+          { id:'ClassNK',          url:`https://www.classnk.or.jp/hp/en/hp0400.html?imonumber=${imo}`, _lang:'ja', _cn:true },
+          // RINA — Italian classification society, free search
+          { id:'RINA-Registry',    url:`https://www.rina.org/en/services/marine/register-of-ships/?imo=${imo}` },
+        );
       } else {
         if (isMill) {
           // Mill: site-targeted Bing query hitting authoritative industry registries
@@ -3435,6 +3576,17 @@ async function runBot() {
           ? (doc.getElementById('js_content') || doc.body)
           : doc.body;
         let   text = bodyEl?.innerText?.slice(0, TEXT_BUDGET) || '';
+
+        // Paywall check — if the main source page is walled, try archive before continuing
+        if (isPaywalled(text)) {
+          log(`Paywall at ${s.id} — trying archive fallback…`, 'warn');
+          const archived = await tryArchiveFallback(s.url, scrapeSignal);
+          if (archived) {
+            const arDoc = parseHTML(archived, s.url);
+            const arEl  = s._wechat ? (arDoc.getElementById('js_content') || arDoc.body) : arDoc.body;
+            text = arEl?.innerText?.slice(0, TEXT_BUDGET) || text;
+          }
+        }
 
         const pageLang = detectLang(doc, text);
         if (pageLang !== 'en') {
