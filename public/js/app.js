@@ -221,7 +221,40 @@ function relevanceScore(text, q) {
 
 // Global domain gate — page must mention at least one sea/maritime/aquaculture term.
 // Prevents hotels, restaurants, and unrelated companies from appearing in results.
-const _SEA_KW = /\b(?:aquaculture|fish(?:ery|eries|meal|oil|ing|farm|pond|cage|hatchery|feed|stock|pass)|seafood|salmon|trout|shrimp|prawn|tilapia|tuna|cod|herring|menhaden|anchoveta|halibut|pollock|mackerel|sea.?bass|seabass|sea.?bream|seabream|oyster|mussel|shellfish|crab|lobster|squid|mollusc|mollusk|bivalve|finfish|pelagic|demersal|mariculture|pisciculture|net.?pen|smolt|broodstock|spawn(?:ing)?|stocking.?density|biomass|fcr\b|asc.?certif|msc.?certif|bap.?certif|global.?salmon|maritime|vessel|trawler|purse.?seiner|factory.?ship|fish.?processing|fish.?factory|feed.?mill|marinetraffic|vesselfinder|fleetmon|equasis|imo\b|mmsi\b|flag.?state|gross.?tonnage|deadweight|port.?of.?registry|call.?sign|nav.?status|fishing.?vessel|cargo.?vessel|bulk.?carrier|tanker)\b|水产|养殖|渔业|鱼粉|鱼油|船舶|渔船|船东|捕鱼|海鲜|大西洋鲑|虾类|对虾|罗非鱼|鳟鱼|公众号|微信|WeChat/i;
+const _SEA_KW = new RegExp(
+  // ── English ───────────────────────────────────────────────────────────────
+  '\\b(?:aquaculture|fish(?:ery|eries|meal|oil|ing|farm|pond|cage|hatchery|feed|stock|pass)|seafood|' +
+  'salmon|trout|shrimp|prawn|tilapia|tuna|cod|herring|menhaden|anchoveta|halibut|pollock|mackerel|' +
+  'sea.?bass|seabass|sea.?bream|seabream|oyster|mussel|shellfish|crab|lobster|squid|mollusc|mollusk|' +
+  'bivalve|finfish|pelagic|demersal|mariculture|pisciculture|net.?pen|smolt|broodstock|spawn(?:ing)?|' +
+  'stocking.?density|biomass|fcr\\b|asc.?certif|msc.?certif|bap.?certif|global.?salmon|maritime|vessel|' +
+  'trawler|purse.?seiner|factory.?ship|fish.?processing|fish.?factory|feed.?mill|marinetraffic|' +
+  'vesselfinder|fleetmon|equasis|imo\\b|mmsi\\b|flag.?state|gross.?tonnage|deadweight|' +
+  'port.?of.?registry|call.?sign|nav.?status|fishing.?vessel|cargo.?vessel|bulk.?carrier|tanker)\\b|' +
+  // ── Norwegian / Nordic ───────────────────────────────────────────────────
+  'fiskeoppdrett|akvakultur|oppdrettsanlegg|lakseoppdrett|settefisk|havbruk|fiskeridir|' +
+  'fiskefartøy|skipsregister|fiskebåt|fiskemel|fiskeolje|reke|torsk|laks|ørret|' +
+  // ── German ──────────────────────────────────────────────────────────────
+  'aquakultur|fischzucht|fischfarm|lachszucht|fischerei|fischfarm|fischmehl|fischöl|garnele|' +
+  // ── French ──────────────────────────────────────────────────────────────
+  'aquaculture|pisciculture|élevage.?poisson|saumon|crevette|huître|farine.?poisson|huile.?poisson|' +
+  // ── Spanish ─────────────────────────────────────────────────────────────
+  'acuicultura|piscicultura|granja.?peces|salmón|camarón|langostino|harina.?pescado|aceite.?pescado|' +
+  // ── Portuguese ──────────────────────────────────────────────────────────
+  'aquicultura|piscicultura|camarão|salmão|farinha.?peixe|óleo.?peixe|' +
+  // ── Japanese ────────────────────────────────────────────────────────────
+  '養殖|水産|漁業|鮭|サーモン|エビ|かき|牡蠣|ぶり|まぐろ|漁船|船籍|船名|総トン数|' +
+  // ── Korean ──────────────────────────────────────────────────────────────
+  '양식|수산|어업|연어|새우|굴|어선|선명|선적|총톤수|' +
+  // ── Russian ─────────────────────────────────────────────────────────────
+  'аквакультура|рыбоводство|рыбная.?ферма|рыболовство|лосось|креветка|устрица|рыбная.?мука|рыбий.?жир|' +
+  'рыболовное.?судно|название.?судна|' +
+  // ── Arabic ──────────────────────────────────────────────────────────────
+  'تربية.?الأحياء|استزراع.?سمكي|سمك|أسماك|روبيان|سلمون|سفينة.?صيد|' +
+  // ── Chinese ─────────────────────────────────────────────────────────────
+  '水产|养殖|渔业|鱼粉|鱼油|船舶|渔船|船东|捕鱼|海鲜|大西洋鲑|虾类|对虾|罗非鱼|鳟鱼|公众号|微信|WeChat',
+  'i'
+);
 
 function isSeaRelated(text) {
   return text ? _SEA_KW.test(text) : false;
@@ -235,9 +268,75 @@ function topicMatch(text, searchType) {
   if (!isSeaRelated(text)) return false;           // global domain gate
   if (!searchType || searchType === 'general') return true;
   const tl = text.toLowerCase();
-  const FARM_KW   = /aquaculture|fish farm|fish cage|net pen|hatchery|salmon farm|shrimp farm|trout farm|tilapia|sea bass|seabass|bream|fcr|stocking density|harvest cycle|asc certified|bap certified|bap star|certified producer|certified facility|seafood source|global salmon|species farmed/;
-  const MILL_KW   = /fishmeal|fish meal|fish oil|fishoil|processing plant|feed mill|reduction plant|feed factory|skretting|biomar|tasa fishmeal|omega-3|marine ingredients|iffo|eumofa|menhaden|anchoveta|reduction|fishmeal content/;
-  const VESSEL_KW = /\bimo\b|mmsi|flag state|call sign|gross tonnage|deadweight|port of registry|marinetraffic|vesselfinder|fleetmon|ais|nav.?status|navigational.?status|fishing vessel|cargo vessel|bulk carrier|tanker|container ship|year built|fao global record|ship registry|vessel registry/;
+  const FARM_KW   = new RegExp(
+    // English
+    'aquaculture|fish farm|fish cage|net pen|hatchery|salmon farm|shrimp farm|trout farm|tilapia|' +
+    'sea bass|seabass|bream|fcr|stocking density|harvest cycle|asc certified|bap certified|' +
+    'certified producer|certified facility|seafood source|global salmon|species farmed|' +
+    // Norwegian
+    'fiskeoppdrett|oppdrettsanlegg|settefisk|havbruk|lakseoppdrett|' +
+    // German
+    'aquakultur|fischzucht|fischfarm|lachszucht|' +
+    // French
+    'pisciculture|élevage.?poisson|ferme.?piscicole|' +
+    // Spanish
+    'acuicultura|piscicultura|granja.?peces|cultivo.?peces|' +
+    // Japanese
+    '養殖場|水産養殖|魚類養殖|' +
+    // Korean
+    '양식장|수산양식|어류양식|' +
+    // Russian
+    'рыбоводство|рыбная.?ферма|аквакультура|' +
+    // Chinese
+    '水产养殖|养殖场|养殖品种',
+    'i'
+  );
+  const MILL_KW   = new RegExp(
+    // English
+    'fishmeal|fish meal|fish oil|fishoil|processing plant|feed mill|reduction plant|feed factory|' +
+    'skretting|biomar|tasa fishmeal|omega-3|marine ingredients|iffo|eumofa|menhaden|anchoveta|reduction|' +
+    // Norwegian
+    'fiskemellfabrikk|fiskeolje|' +
+    // German
+    'fischmehl|fischöl|fischmehlwerk|' +
+    // French
+    'farine.?poisson|huile.?poisson|usine.?traitement|' +
+    // Spanish
+    'harina.?pescado|aceite.?pescado|planta.?procesamiento|' +
+    // Japanese
+    '魚粉工場|魚粉|魚油|' +
+    // Korean
+    '어분공장|어분|어유|' +
+    // Russian
+    'рыбная.?мука|рыбий.?жир|рыбомучной|' +
+    // Chinese
+    '鱼粉|鱼油|加工厂|鱼粉厂',
+    'i'
+  );
+  const VESSEL_KW = new RegExp(
+    // English
+    '\\bimo\\b|mmsi|flag state|call sign|gross tonnage|deadweight|port of registry|' +
+    'marinetraffic|vesselfinder|fleetmon|ais|nav.?status|navigational.?status|' +
+    'fishing vessel|cargo vessel|bulk carrier|tanker|container ship|year built|' +
+    'fao global record|ship registry|vessel registry|' +
+    // Norwegian
+    'fiskefartøy|skipsregister|bruttotonn|hjemmehavn|' +
+    // German
+    'fischereifahrzeug|schiffsregister|bruttoraumzahl|heimathafen|' +
+    // French
+    'navire.?pêche|registre.?navire|jauge.?brute|port.?attache|' +
+    // Spanish
+    'buque.?pesquero|registro.?barco|arqueo.?bruto|puerto.?matrícula|' +
+    // Japanese
+    '漁船|船籍|総トン数|船名|呼出符号|' +
+    // Korean
+    '어선|선적|총톤수|선명|호출부호|' +
+    // Russian
+    'рыболовное.?судно|судовой.?реестр|название.?судна|' +
+    // Chinese
+    '船舶|渔船|船名|船旗|总吨|IMO|呼号',
+    'i'
+  );
   // Cross-category exclusion: reject if the page is strongly about a different category.
   // We no longer use "|| !OTHER_KW" — isSeaRelated already ensures sea context.
   if (searchType === 'farm')   return !VESSEL_KW.test(tl) || FARM_KW.test(tl);
@@ -1425,85 +1524,109 @@ function langIndustryTerms(lang, searchType) {
  * Returns an array of {id, url, _lang} source objects.
  */
 function langSpecificSources(q, qEn, lang, searchType) {
-  const enc    = encodeURIComponent(q);
-  const encEn  = encodeURIComponent(qEn);
+  const enc   = encodeURIComponent(q);
+  const encEn = encodeURIComponent(qEn);
+  const terms = encodeURIComponent(langIndustryTerms(lang, searchType));
   const isV = searchType === 'vessel';
   const isM = searchType === 'mill';
   const sources = [];
 
+  // ── Norwegian / Nordic ───────────────────────────────────────────────────
   if (lang === 'no' || lang === 'sv' || lang === 'da' || lang === 'fi') {
-    // Nordic aquaculture registries
     sources.push(
-      { id:'Fiskeridir',  url:`https://www.fiskeridir.no/Akvakultur/Registre-og-skjema/Akvakulturregisteret?s=${enc}`, _lang:'no' },
-      { id:'BarentsWatch',url:`https://www.barentswatch.no/bw/map?lat=68&lon=15&zoom=5`, _lang:'no' },
+      // Official Norwegian aquaculture registry + AIS / vessel registry
+      { id:'Fiskeridir',   url:`https://www.fiskeridir.no/Akvakultur/Registre-og-skjema/Akvakulturregisteret?s=${enc}`, _lang:'no' },
+      { id:'BarentsWatch', url:`https://www.barentswatch.no/bw/map?lat=68&lon=15&zoom=5`, _lang:'no' },
+      // Google Norway — surfaces Norwegian-language pages effectively
+      { id:'Google-NO',    url:`https://www.google.no/search?q=${enc}+${terms}&hl=no&gl=no&num=20`, _lang:'no' },
+      { id:'Bing-NO',      url:`https://www.bing.com/search?q=${enc}+${terms}&setlang=nb-NO&cc=NO`, _lang:'no' },
     );
     if (isV) sources.push(
-      { id:'Sjøfart',     url:`https://www.sjofartsdir.no/sjofart/fartoy/fartoyregisteret/?sok=${enc}`, _lang:'no' },
-      { id:'Kystverket',  url:`https://kystverket.no/navigasjon-og-overvaking/ais/aisinformasjon/?q=${encEn}`, _lang:'no' },
-    );
-    // Norwegian search
-    sources.push(
-      { id:'Bing-NO', url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms(lang, searchType))}&setlang=nb-NO&cc=NO`, _lang:'no' },
+      { id:'Sjøfart',      url:`https://www.sjofartsdir.no/sjofart/fartoy/fartoyregisteret/?sok=${enc}`, _lang:'no' },
     );
   }
 
+  // ── Spanish / Latin America ─────────────────────────────────────────────
   if (lang === 'es') {
     sources.push(
-      { id:'Subpesca-CL', url:`https://www.subpesca.cl/buscador/606/w3-propertyvalue-${enc}.html`, _lang:'es' },
-      { id:'Sernapesca',  url:`https://www.sernapesca.cl/informes-y-estadisticas/consulta/${enc}`, _lang:'es' },
-      { id:'Produce-PE',  url:`https://www.produce.gob.pe/index.php/busqueda?q=${enc}`, _lang:'es' },
-      { id:'Bing-ES',     url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('es', searchType))}&setlang=es-ES`, _lang:'es' },
+      { id:'Subpesca-CL',  url:`https://www.subpesca.cl/buscador/606/w3-propertyvalue-${enc}.html`, _lang:'es' },
+      { id:'Sernapesca',   url:`https://www.sernapesca.cl/informes-y-estadisticas/consulta/${enc}`, _lang:'es' },
+      { id:'Produce-PE',   url:`https://www.produce.gob.pe/index.php/busqueda?q=${enc}`, _lang:'es' },
+      { id:'Google-ES',    url:`https://www.google.es/search?q=${enc}+${terms}&hl=es&gl=es&num=20`, _lang:'es' },
+      { id:'Google-CL',    url:`https://www.google.cl/search?q=${enc}+${terms}&hl=es&gl=cl&num=20`, _lang:'es' },
+      { id:'Bing-ES',      url:`https://www.bing.com/search?q=${enc}+${terms}&setlang=es-ES`, _lang:'es' },
     );
   }
 
+  // ── Portuguese / Brazil ─────────────────────────────────────────────────
   if (lang === 'pt') {
     sources.push(
-      { id:'MAPA-BR',   url:`https://www.gov.br/agricultura/pt-br/busca?SearchableText=${enc}`, _lang:'pt' },
-      { id:'Bing-PT',   url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('pt', searchType))}&setlang=pt-PT`, _lang:'pt' },
+      { id:'MAPA-BR',      url:`https://www.gov.br/agricultura/pt-br/busca?SearchableText=${enc}`, _lang:'pt' },
+      { id:'Google-BR',    url:`https://www.google.com.br/search?q=${enc}+${terms}&hl=pt-BR&gl=br&num=20`, _lang:'pt' },
+      { id:'Bing-PT',      url:`https://www.bing.com/search?q=${enc}+${terms}&setlang=pt-PT`, _lang:'pt' },
     );
   }
 
-  if (lang === 'ja') {
-    sources.push(
-      { id:'JFA-Japan',  url:`https://www.jfa.maff.go.jp/j/saibai/search/?keyword=${enc}`, _lang:'ja', _cn:true },
-      { id:'Bing-JA',    url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('ja', searchType))}&setlang=ja-JP&cc=JP`, _lang:'ja', _cn:true },
-    );
-    if (isV) sources.push(
-      { id:'JG-Registry', url:`https://www.jg.go.jp/vessel/search?name=${enc}`, _lang:'ja', _cn:true },
-    );
-  }
-
-  if (lang === 'ko') {
-    sources.push(
-      { id:'FIPS-KR',    url:`https://www.fips.go.kr/search/search.do?searchWord=${enc}`, _lang:'ko', _cn:true },
-      { id:'Bing-KO',    url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('ko', searchType))}&setlang=ko-KR&cc=KR`, _lang:'ko', _cn:true },
-    );
-  }
-
-  if (lang === 'ar') {
-    sources.push(
-      { id:'Bing-AR', url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('ar', searchType))}&setlang=ar-SA&cc=SA`, _lang:'ar', _cn:true },
-    );
-  }
-
+  // ── French ──────────────────────────────────────────────────────────────
   if (lang === 'fr') {
     sources.push(
-      { id:'FranceAgriMer', url:`https://www.franceagrimer.fr/recherche?text=${enc}`, _lang:'fr' },
-      { id:'Bing-FR',       url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('fr', searchType))}&setlang=fr-FR`, _lang:'fr' },
+      { id:'FranceAgriMer',url:`https://www.franceagrimer.fr/recherche?text=${enc}`, _lang:'fr' },
+      { id:'Google-FR',    url:`https://www.google.fr/search?q=${enc}+${terms}&hl=fr&gl=fr&num=20`, _lang:'fr' },
+      { id:'Bing-FR',      url:`https://www.bing.com/search?q=${enc}+${terms}&setlang=fr-FR`, _lang:'fr' },
     );
   }
 
+  // ── German ──────────────────────────────────────────────────────────────
   if (lang === 'de') {
     sources.push(
-      { id:'BLE-DE',  url:`https://www.ble.de/DE/Fischerei/Fischerei_node.html;jsessionid=0?q=${enc}`, _lang:'de' },
-      { id:'Bing-DE', url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('de', searchType))}&setlang=de-DE`, _lang:'de' },
+      { id:'BLE-DE',       url:`https://www.ble.de/DE/Fischerei/Fischerei_node.html?q=${enc}`, _lang:'de' },
+      { id:'Google-DE',    url:`https://www.google.de/search?q=${enc}+${terms}&hl=de&gl=de&num=20`, _lang:'de' },
+      { id:'Bing-DE',      url:`https://www.bing.com/search?q=${enc}+${terms}&setlang=de-DE`, _lang:'de' },
     );
   }
 
-  if (lang === 'ru') {
+  // ── Japanese — Yahoo Japan is dominant, not Google ───────────────────────
+  if (lang === 'ja') {
+    const termsJa = encodeURIComponent(langIndustryTerms('ja', searchType));
     sources.push(
-      { id:'Rosrybolovstvo', url:`https://fish.gov.ru/search/?q=${enc}`, _lang:'ru', _cn:true },
-      { id:'Bing-RU',        url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('ru', searchType))}&setlang=ru-RU&cc=RU`, _lang:'ru', _cn:true },
+      { id:'Yahoo-JP',     url:`https://search.yahoo.co.jp/search?p=${enc}+${termsJa}`, _lang:'ja', _cn:true },
+      { id:'Google-JP',    url:`https://www.google.co.jp/search?q=${enc}+${termsJa}&hl=ja&gl=jp&num=20`, _lang:'ja', _cn:true },
+      { id:'Bing-JA',      url:`https://www.bing.com/search?q=${enc}+${termsJa}&setlang=ja-JP&cc=JP`, _lang:'ja', _cn:true },
+      { id:'JFA-Japan',    url:`https://www.jfa.maff.go.jp/j/saibai/search/?keyword=${enc}`, _lang:'ja', _cn:true },
+    );
+    if (isV) sources.push(
+      { id:'JG-Registry',  url:`https://www6.kaiho.mlit.go.jp/inquiry/jsp/ShipInfo.jsp?name=${enc}`, _lang:'ja', _cn:true },
+    );
+  }
+
+  // ── Korean — Naver is dominant ──────────────────────────────────────────
+  if (lang === 'ko') {
+    const termsKo = encodeURIComponent(langIndustryTerms('ko', searchType));
+    sources.push(
+      { id:'Naver-KO',     url:`https://search.naver.com/search.naver?query=${enc}+${termsKo}`, _lang:'ko', _cn:true },
+      { id:'Daum-KO',      url:`https://search.daum.net/search?q=${enc}+${termsKo}`, _lang:'ko', _cn:true },
+      { id:'Google-KR',    url:`https://www.google.co.kr/search?q=${enc}+${termsKo}&hl=ko&gl=kr&num=20`, _lang:'ko', _cn:true },
+      { id:'FIPS-KR',      url:`https://www.fips.go.kr/search/search.do?searchWord=${enc}`, _lang:'ko', _cn:true },
+    );
+  }
+
+  // ── Russian — Yandex is dominant ────────────────────────────────────────
+  if (lang === 'ru') {
+    const termsRu = encodeURIComponent(langIndustryTerms('ru', searchType));
+    sources.push(
+      { id:'Yandex-RU',    url:`https://yandex.ru/search/?text=${enc}+${termsRu}`, _lang:'ru', _cn:true },
+      { id:'Google-RU',    url:`https://www.google.ru/search?q=${enc}+${termsRu}&hl=ru&gl=ru&num=20`, _lang:'ru', _cn:true },
+      { id:'Bing-RU',      url:`https://www.bing.com/search?q=${enc}+${termsRu}&setlang=ru-RU&cc=RU`, _lang:'ru', _cn:true },
+      { id:'Rosrybolovstvo',url:`https://fish.gov.ru/search/?q=${enc}`, _lang:'ru', _cn:true },
+    );
+  }
+
+  // ── Arabic ──────────────────────────────────────────────────────────────
+  if (lang === 'ar') {
+    const termsAr = encodeURIComponent(langIndustryTerms('ar', searchType));
+    sources.push(
+      { id:'Google-AR',    url:`https://www.google.com.sa/search?q=${enc}+${termsAr}&hl=ar&gl=sa&num=20`, _lang:'ar', _cn:true },
+      { id:'Bing-AR',      url:`https://www.bing.com/search?q=${enc}+${termsAr}&setlang=ar-SA&cc=SA`, _lang:'ar', _cn:true },
     );
   }
 
@@ -4905,6 +5028,14 @@ async function bulkScrapeItem(q, searchType, yearTo, catFilter, signal) {
   const TEXT_BUDGET = 15000;
   const BULK_SKIP   = /^https?:\/\/(www\.bing\.com|www\.google\.(com|cn)\/search|html\.duckduckgo\.com|duckduckgo\.com|baidu\.com\/s)[/?]/i;
 
+  // ── Query language detection + cross-language translation ───────────────
+  const queryLang = detectQueryLang(q);
+  let qEn = q;
+  if (queryLang !== 'en') {
+    try { qEn = await translateQuery(q, queryLang, 'en', signal); } catch {}
+  }
+  const langTerms = langIndustryTerms(queryLang, searchType);
+
   // 1 ─ Direct API queries (structured databases first)
   let scrapeResults = [];
   let imo = '', mmsi = '';
@@ -4921,41 +5052,41 @@ async function bulkScrapeItem(q, searchType, yearTo, catFilter, signal) {
     scrapeResults = await queryFarmAPIs(q, signal, yearTo, searchType).catch(() => []);
   }
 
-  // 2 ─ Build search source list — mirrors runBot quality
-  const words   = q.trim().split(/\s+/);
-  const qPhrase = (words.length >= 3 || q.length >= 16) ? `"${q}"` : q;
-  const catKW   = catFilter ? ` ${catFilter}` : '';
+  // 2 ─ Build search source list
+  const words    = qEn.trim().split(/\s+/);
+  const qEnPhrase = (words.length >= 3 || qEn.length >= 16) ? `"${qEn}"` : qEn;
+  const catKW    = catFilter ? ` ${catFilter}` : '';
 
+  // English engines use translated query; non-English engines get original query
   const bingQ = isVessel
-    ? `${qPhrase}${catKW} vessel ship fishing registry IMO site:marinetraffic.com OR site:vesselfinder.com OR site:equasis.org`
-    : isMill ? `${qPhrase}${catKW} fishmeal processing plant site:iffo.com OR site:fis.com OR site:seafoodsource.com`
-             : `${qPhrase}${catKW} fish farm aquaculture facility site:asc-aqua.org OR site:seafoodsource.com OR site:fis.com OR site:mara.gov.cn`;
+    ? `${qEnPhrase}${catKW} vessel ship fishing registry IMO site:marinetraffic.com OR site:vesselfinder.com OR site:equasis.org`
+    : isMill ? `${qEnPhrase}${catKW} fishmeal processing plant site:iffo.com OR site:fis.com OR site:seafoodsource.com`
+             : `${qEnPhrase}${catKW} fish farm aquaculture facility site:asc-aqua.org OR site:seafoodsource.com OR site:fis.com OR site:mara.gov.cn`;
 
-  const cnQ = isVessel
-    ? `${q} 船舶 船名 IMO`
-    : isMill ? `${q} 鱼粉厂 加工厂`
-             : `${q} 水产养殖 养殖场`;
-
-  const wxQ = isVessel ? `${q} 渔船` : isMill ? `${q} 鱼粉` : `${q} 水产养殖`;
+  const cnQ = isVessel ? `${q} 船舶 船名 IMO` : isMill ? `${q} 鱼粉厂 加工厂` : `${q} 水产养殖 养殖场`;
 
   const scraperURLs = [
     { id:'Web-Discovery', url:`https://www.bing.com/search?q=${encodeURIComponent(bingQ)}` },
     { id:'DDG-Search',    url:`https://html.duckduckgo.com/html/?q=${encodeURIComponent(
-        isVessel ? `${qPhrase} vessel ship IMO flag registry year built`
-        : isMill  ? `${qPhrase} fishmeal fish oil processing capacity`
-                  : `${qPhrase} aquaculture fish farm species certified`)}` },
+        isVessel ? `${qEnPhrase} vessel ship IMO flag registry year built ${langTerms}`
+        : isMill  ? `${qEnPhrase} fishmeal fish oil processing capacity ${langTerms}`
+                  : `${qEnPhrase} aquaculture fish farm species certified ${langTerms}`)}` },
     { id:'Google-Search', url:`https://www.google.com/search?q=${encodeURIComponent(
-        isVessel ? `${qPhrase} vessel ship IMO flag gross tonnage`
-        : isMill  ? `${qPhrase} fishmeal mill capacity input species`
-                  : `${qPhrase} fish farm aquaculture capacity species certification`)}&num=10&hl=en&gl=us` },
+        isVessel ? `${qEnPhrase} vessel ship IMO flag gross tonnage ${langTerms}`
+        : isMill  ? `${qEnPhrase} fishmeal mill capacity input species ${langTerms}`
+                  : `${qEnPhrase} fish farm aquaculture capacity species certification ${langTerms}`)}&num=10&hl=en&gl=us` },
     // Chinese search
-    { id:'Google-CN',        url:`https://www.google.com/search?q=${encodeURIComponent(cnQ)}&num=10&hl=zh-CN&gl=cn`, _cn:true },
-    { id:'WeChat-Sogou',     url:`https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(q)}`, _cn:true, _wechat:true },
-    // International fallback
-    { id:'Intl-Search', url:`https://www.bing.com/search?q=${encodeURIComponent(
-        isVessel ? `${q} nave vessel schiff 船 مركب`
-                 : `${q} acuicultura aquaculture 水产养殖`)}&setlang=en`, _fallback:true },
+    { id:'Google-CN',    url:`https://www.google.com/search?q=${encodeURIComponent(cnQ)}&num=10&hl=zh-CN&gl=cn`, _cn:true },
+    { id:'WeChat-Sogou', url:`https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(q)}`, _cn:true, _wechat:true },
+    // Intl fallback — original query + multilingual terms
+    { id:'Intl-Search',  url:`https://www.bing.com/search?q=${encodeURIComponent(
+        isVessel ? `${q} nave vessel schiff 船 مركب ${langTerms}`
+                 : `${q} acuicultura aquaculture 水产养殖 ${langTerms}`)}&setlang=en`, _fallback:true },
   ];
+
+  // Language-specific engines for the query's native language
+  const langSrcs = langSpecificSources(q, qEn, queryLang, searchType);
+  scraperURLs.push(...langSrcs);
 
   // Direct vessel registries when we have an IMO
   if (isVessel) {
@@ -4973,7 +5104,17 @@ async function bulkScrapeItem(q, searchType, yearTo, catFilter, signal) {
     }
   }
 
-  const DISCOVERY_BULK = ['Web-Discovery','DDG-Search','Google-Search','Google-CN','WeChat-Sogou','Intl-Search'];
+  const DISCOVERY_BULK = [
+    'Web-Discovery','DDG-Search','Google-Search','Google-CN','WeChat-Sogou','Intl-Search',
+    'Bing-EN-Xlat',
+    // Language-specific search engines — all follow their links
+    'Google-NO','Bing-NO','Google-ES','Bing-ES','Google-CL','Google-BR','Bing-PT',
+    'Google-FR','Bing-FR','Google-DE','Bing-DE',
+    'Yahoo-JP','Google-JP','Bing-JA',
+    'Naver-KO','Daum-KO','Google-KR',
+    'Yandex-RU','Google-RU','Bing-RU',
+    'Google-AR','Bing-AR',
+  ];
   const allImgs = scrapeResults.flatMap(r => r.imgs || []);
 
   // 3 ─ Scrape with per-source translation and DOM-based link following
@@ -4981,7 +5122,7 @@ async function bulkScrapeItem(q, searchType, yearTo, catFilter, signal) {
     if (signal?.aborted) break;
     try {
       const isWX = s._wechat;
-      const html = await fetchViaProxy(s.url, timedSignal(signal, s._cn ? 28000 : 20000));
+      const html = await fetchViaProxy(s.url, timedSignal(signal, (s._cn || s._lang) ? 28000 : 20000));
       const doc  = parseHTML(html, s.url);
       const bodyEl = isWX ? (doc.getElementById('js_content') || doc.body) : doc.body;
       let   text = bodyEl?.innerText?.slice(0, TEXT_BUDGET) || '';
