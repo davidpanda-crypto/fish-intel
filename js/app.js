@@ -1113,11 +1113,13 @@ async function claudeExtract(pageTexts, query, searchType, signal = null) {
 
   // Sort by source authority before slicing — highest-ranked sources first
   const sortedTexts = [...pageTexts].sort((a, b) => sourceRank(b.source) - sourceRank(a.source));
+  // 8 sources × 4000 chars = 32,000 chars — well within Claude's context window.
+  // Sorted by source authority so the most trusted registries appear first.
   const corpus = sortedTexts
-    .slice(0, 8)  // up to 8 sources (8 × 2500 = 20,000 chars — fits comfortably in context)
+    .slice(0, 8)
     .map((p, i) => {
-      const excerpt = p.text.slice(0, 2500);
-      const truncated = p.text.length > 2500;
+      const excerpt = p.text.slice(0, 4000);
+      const truncated = p.text.length > 4000;
       return `=== Source ${i + 1} [${p.source}] ===\n${excerpt}${truncated ? '\n[…truncated]' : ''}`;
     })
     .join('\n\n');
@@ -3293,10 +3295,10 @@ async function runBot() {
     const exitAC = new AbortController();
     const scrapeSignal = typeof AbortSignal.any === 'function'
       ? AbortSignal.any([signal, exitAC.signal]) : signal;
-    // Vessels have ~12 core fields (IMO, flag, GT, DWT, year, call sign, type, port, owner, manager, length, beam)
-    // Farms have ~10 (name, country, species, capacity, method, cert, operator, lat/lon, license, water_type)
-    // Mills have ~8 (name, country, input species, capacity, output, fishmeal%, fishoil%, operator)
-    const FIELD_THRESHOLD = isVessel ? 10 : isMill ? 7 : 8;
+    // Vessels have 15+ core fields — don't exit early, we want all of them
+    // Farms have 12+, Mills have 10+. Raising these means more sources get scraped
+    // before we stop, which is exactly the intensive behaviour we want.
+    const FIELD_THRESHOLD = isVessel ? 14 : isMill ? 10 : 12;
     function checkEarlyExit() {
       if (exitAC.signal.aborted) return;
       const unique = new Set(
@@ -3382,7 +3384,41 @@ async function runBot() {
 
         const fields = extractFields(doc, text);
         const imgs   = extractImages(doc, s.url);
-        if (!imo) { const f = extractIMOs(text); if (f.length) imo = f[0]; }
+
+        // Cross-reference: if an IMO is freshly discovered from this page, immediately
+        // trigger targeted Equasis + MarineTraffic lookups for the most authoritative vessel data
+        if (!imo) {
+          const imoFound = extractIMOs(text);
+          if (imoFound.length) {
+            imo = imoFound[0];
+            log(`IMO discovered: ${imo} — triggering targeted vessel lookups`, 'ok');
+            // Fire targeted lookups in background (don't await — scrape continues)
+            Promise.allSettled([
+              fetchViaProxy(`https://www.equasis.org/EquasisWeb/restricted/ShipInfo?fs=Search&P_IMO=${imo}`, timedSignal(scrapeSignal, 20000)),
+              fetchViaProxy(`https://www.marinetraffic.com/en/ais/details/ships/imo:${imo}`, timedSignal(scrapeSignal, 20000)),
+              fetchViaProxy(`https://www.vesselfinder.com/vessels/details/${imo}`, timedSignal(scrapeSignal, 20000)),
+            ]).then(settled => {
+              for (const [idx, res] of settled.entries()) {
+                if (res.status !== 'fulfilled' || !res.value) continue;
+                try {
+                  const srcIds = ['Equasis','MarineTraffic','VesselFinder'];
+                  const pd = parseHTML(res.value, '');
+                  const pt = pd.body?.innerText?.slice(0, 15000) || '';
+                  if (!isSeaRelated(pt)) continue;
+                  const pf = filterFieldsByType(extractFields(pd, pt), 'vessel');
+                  pf._imo = imo;
+                  const fc = Object.keys(pf).filter(k => !k.startsWith('_')).length;
+                  if (fc >= 1) {
+                    log(`✓ Cross-ref ${srcIds[idx]}: ${fc} field(s)`, 'ok');
+                    scrapeResults.push({ id: srcIds[idx], ok:true, url:'', fields:pf, imgs:[], text:pt });
+                    maybeFireClaude(pt, srcIds[idx]);
+                    checkEarlyExit();
+                  }
+                } catch {}
+              }
+            }).catch(() => {});
+          }
+        }
 
         // Discovery sources: follow top result links — use DOM, not regex
         if (DISCOVERY_IDS.includes(s.id)) {
@@ -3401,7 +3437,8 @@ async function runBot() {
             ? [...discovered.filter(u => /mp\.weixin\.qq\.com/i.test(u)),
                ...discovered.filter(u => !/mp\.weixin\.qq\.com/i.test(u))]
             : discovered;
-          const topURLs = [...new Set(wxFirst)].slice(0, s._fallback ? 4 : (s._wechat ? 8 : 6));
+          // Intensive: follow up to 12 links from primary discovery pages, 8 from WeChat, 5 from fallbacks
+          const topURLs = [...new Set(wxFirst)].slice(0, s._fallback ? 5 : (s._wechat ? 8 : 12));
 
           for (const u of topURLs) {
             if (scrapeSignal.aborted) break;
@@ -3468,7 +3505,7 @@ async function runBot() {
     const fallbacks = scraperURLs.filter(s =>  s._fallback);
     _sourcesTotal = scraperURLs.length;
     setStatus(`Scanning ${_sourcesTotal} source${_sourcesTotal !== 1 ? 's' : ''}…`);
-    const CONCURRENCY = 4;
+    const CONCURRENCY = 6; // 6 concurrent workers — intensive but polite
 
     // Run primary sources CONCURRENCY-at-a-time
     let idx = 0;
@@ -3563,17 +3600,27 @@ async function runBot() {
         if (signal.aborted) break;
         try {
           const rHtml = await fetchViaProxy(rUrl, signal);
-          const rUrls = [...new Set(
-            (rHtml.match(/href="(https?:\/\/(?!www\.bing\.com|duckduckgo\.com)[^"]{12,300})"/g) || [])
-              .map(m => m.slice(6,-1)).filter(isValidURL)
-          )].slice(0, 8);
-          for (const ru of rUrls) {
+          const rDoc  = parseHTML(rHtml, rUrl);
+          // DOM-based link extraction — same quality as the main scrape loop
+          const rAnchors = [...rDoc.querySelectorAll('a[href]')];
+          const rDiscovered = [];
+          for (const a of rAnchors) {
+            try {
+              const href = new URL(a.href || a.getAttribute('href'), rUrl).href;
+              if (isValidURL(href) && !rDiscovered.includes(href)) rDiscovered.push(href);
+            } catch {}
+          }
+          const rTopURLs = [...new Set(rDiscovered)].slice(0, 12); // 12 links in retry too
+          for (const ru of rTopURLs) {
             if (signal.aborted) break;
             try {
               const rPh = await fetchViaProxy(ru, signal);
-              const rPd = parseHTML(rPh);
-              let rPt = rPd.body?.innerText?.slice(0, 8000) || '';
-              if (relevanceScore(rPt, q) === 0) continue;
+              const rPd = parseHTML(rPh, ru);
+              let rPt = rPd.body?.innerText?.slice(0, 15000) || '';
+              const rLang = detectLang(rPd, rPt);
+              if (rLang !== 'en') { try { rPt = await translate(rPt.slice(0, 4000), signal); } catch {} }
+              if (relevanceScore(rPt, q) === 0 && relevanceScore(rPt, qEn || q) === 0) continue;
+              if (!isSeaRelated(rPt)) continue;
               const rPf = filterFieldsByType(extractFields(rPd, rPt), searchType);
               if (Object.keys(rPf).filter(k => !k.startsWith('_')).length >= 1) {
                 scrapeResults.push({ id: new URL(ru).hostname, ok:true, url:ru, fields:rPf, imgs:extractImages(rPd, ru), text:rPt });
@@ -3820,8 +3867,8 @@ async function queryFarmAPIs(q, signal, yearTo = new Date().getFullYear(), searc
   if (osmSettled.status === 'fulfilled' && osmSettled.value)   results.push(osmSettled.value);
   if (wikiSettled.status === 'fulfilled' && wikiSettled.value) results.push(wikiSettled.value);
 
-  // Run FAO and ASC in parallel — both use fetchViaProxy (proxy layer handles concurrency)
-  const [faoSettled, ascSettled] = await Promise.allSettled([
+  // Run FAO, ASC, BAP, and GlobalG.A.P. all in parallel — intensive multi-source lookup
+  const [faoSettled, ascSettled, bapSettled, ggapSettled] = await Promise.allSettled([
 
     /* ── 3. FAO Fisheries & Aquaculture ── */
     (async () => {
@@ -3831,7 +3878,7 @@ async function queryFarmAPIs(q, signal, yearTo = new Date().getFullYear(), searc
         signal
       );
       const faoDoc  = parseHTML(faoHTML);
-      const faoText = faoDoc.body?.innerText?.slice(0, 6000) || '';
+      const faoText = faoDoc.body?.innerText?.slice(0, 8000) || '';
       if (relevanceScore(faoText, q) > 0) {
         const fields = extractFields(faoDoc, faoText);
         const fc = Object.keys(fields).filter(k => !k.startsWith('_')).length;
@@ -3839,12 +3886,11 @@ async function queryFarmAPIs(q, signal, yearTo = new Date().getFullYear(), searc
           log(`FAO: ${fc} field(s) found`, 'ok');
           return { id:'FAO', ok:true, url:`https://www.fao.org/fishery/en/search?query=${encodeURIComponent(safeQ)}`, fields, imgs:[], text:faoText };
         }
-        log('FAO: page fetched but no structured fields', 'warn');
       }
       return null;
     })(),
 
-    /* ── 4. ASC (Aquaculture Stewardship Council) — farms only, not mills ── */
+    /* ── 4. ASC (Aquaculture Stewardship Council) ── */
     searchType === 'mill' ? Promise.resolve(null) : (async () => {
       log('ASC: searching certified producers…', 'info');
       const ascHTML = await fetchViaProxy(
@@ -3852,7 +3898,7 @@ async function queryFarmAPIs(q, signal, yearTo = new Date().getFullYear(), searc
         signal
       );
       const ascDoc  = parseHTML(ascHTML);
-      const ascText = ascDoc.body?.innerText?.slice(0, 4000) || '';
+      const ascText = ascDoc.body?.innerText?.slice(0, 6000) || '';
       if (relevanceScore(ascText, q) > 0) {
         const fields = extractFields(ascDoc, ascText);
         if (/certified|asc.?approved/i.test(ascText) && !fields.certification) fields.certification = 'ASC Certified';
@@ -3864,10 +3910,54 @@ async function queryFarmAPIs(q, signal, yearTo = new Date().getFullYear(), searc
       }
       return null;
     })(),
+
+    /* ── 5. BAP (Best Aquaculture Practices) — farms + mills ── */
+    (async () => {
+      log('BAP: searching certified facilities…', 'info');
+      const bapHTML = await fetchViaProxy(
+        `https://www.bapcertification.org/Producers?name=${encodeURIComponent(safeQ)}&country=&type=`,
+        signal
+      );
+      const bapDoc  = parseHTML(bapHTML);
+      const bapText = bapDoc.body?.innerText?.slice(0, 6000) || '';
+      if (relevanceScore(bapText, q) > 0) {
+        const fields = extractFields(bapDoc, bapText);
+        if (/bap|certified|star/i.test(bapText) && !fields.certification) fields.certification = 'BAP Certified';
+        const fc = Object.keys(fields).filter(k => !k.startsWith('_')).length;
+        if (fc > 0) {
+          log(`BAP: ${fc} field(s) found`, 'ok');
+          return { id:'BAP', ok:true, url:`https://www.bapcertification.org/Producers?name=${encodeURIComponent(safeQ)}`, fields, imgs:[], text:bapText };
+        }
+      }
+      return null;
+    })(),
+
+    /* ── 6. GlobalG.A.P. — certified aquaculture producers ── */
+    searchType !== 'vessel' ? (async () => {
+      log('GlobalG.A.P.: searching certified producers…', 'info');
+      const ggapHTML = await fetchViaProxy(
+        `https://database.globalgap.org/globalgap/search/search.do?query=${encodeURIComponent(safeQ)}&subSchemeId=AQUA`,
+        signal
+      );
+      const ggapDoc  = parseHTML(ggapHTML);
+      const ggapText = ggapDoc.body?.innerText?.slice(0, 6000) || '';
+      if (relevanceScore(ggapText, q) > 0) {
+        const fields = extractFields(ggapDoc, ggapText);
+        if (/global.?g\.?a\.?p|certified/i.test(ggapText) && !fields.certification) fields.certification = 'GlobalG.A.P. Certified';
+        const fc = Object.keys(fields).filter(k => !k.startsWith('_')).length;
+        if (fc > 0) {
+          log(`GlobalG.A.P.: ${fc} field(s) found`, 'ok');
+          return { id:'GlobalGAP', ok:true, url:`https://database.globalgap.org/globalgap/search/search.do?query=${encodeURIComponent(safeQ)}`, fields, imgs:[], text:ggapText };
+        }
+      }
+      return null;
+    })() : Promise.resolve(null),
   ]);
 
-  if (faoSettled.status === 'fulfilled' && faoSettled.value) results.push(faoSettled.value);
-  if (ascSettled.status === 'fulfilled' && ascSettled.value) results.push(ascSettled.value);
+  if (faoSettled.status  === 'fulfilled' && faoSettled.value)  results.push(faoSettled.value);
+  if (ascSettled.status  === 'fulfilled' && ascSettled.value)  results.push(ascSettled.value);
+  if (bapSettled.status  === 'fulfilled' && bapSettled.value)  results.push(bapSettled.value);
+  if (ggapSettled.status === 'fulfilled' && ggapSettled.value) results.push(ggapSettled.value);
 
   return results;
 }
@@ -3882,7 +3972,7 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
   // Phase 1: Wikipedia + OSM in parallel (both direct API calls)
   const [wikiV, osmV] = await Promise.allSettled([
 
-    /* ── 1. Wikipedia — vessel article ── */
+    /* ── 1. Wikipedia — full article text ── */
     (async () => {
       log('Wikipedia: searching for vessel…', 'info');
       const searchResp = await fetch(
@@ -3894,24 +3984,36 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
       const pages = searchData?.query?.search || [];
       const out = [];
       for (const p of pages.slice(0, 2)) {
-        const summResp = await fetch(
-          `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(p.title)}`,
-          { signal: timedSignal(signal, 10000) }
-        );
-        if (!summResp.ok) continue;
-        const summ = await summResp.json();
-        if (summ.extract && isEntityDescription(summ.title || summ.extract, safeQ)) {
-          const f = {};
-          f.description = summ.extract.slice(0, 1200);
-          if (summ.title)       f.vessel_name = summ.title;
-          if (summ.coordinates) { f.latitude = String(summ.coordinates.lat); f.longitude = String(summ.coordinates.lon); }
-          const imoM = summ.extract.match(/\bIMO[\s:]*(\d{7})\b/i);
-          if (imoM) { f._imo = imoM[1]; if (!imo) imo = imoM[1]; }
-          const flagM = summ.extract.match(/flag(?:ged)? (?:of |state )?([A-Z][a-z]+(?: [A-Z][a-z]+)?)/);
-          if (flagM) f.flag = flagM[1];
-          log(`✓ Wikipedia: "${p.title}"`, 'ok');
-          out.push({ id:'Wikipedia', ok:true, url:`https://en.wikipedia.org/wiki/${encodeURIComponent(p.title)}`, fields:f, imgs:[], text:summ.extract });
+        // Fetch full article plain-text (sections, tables, infobox) — much more data than summary
+        const [summResp, fullResp] = await Promise.allSettled([
+          fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(p.title)}`, { signal: timedSignal(signal, 10000) }),
+          fetch(`https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(p.title)}&prop=extracts&explaintext=1&exsectionformat=plain&format=json&origin=*`, { signal: timedSignal(signal, 12000) }),
+        ]);
+        if (summResp.status !== 'fulfilled' || !summResp.value.ok) continue;
+        const summ = await summResp.value.json();
+        if (!summ.extract || !isEntityDescription(summ.title || summ.extract, safeQ)) continue;
+
+        // Use full article text when available — much more data than the summary alone
+        let fullText = summ.extract;
+        if (fullResp.status === 'fulfilled' && fullResp.value.ok) {
+          try {
+            const fd = await fullResp.value.json();
+            const pages_ = Object.values(fd.query?.pages || {});
+            if (pages_[0]?.extract) fullText = pages_[0].extract;
+          } catch {}
         }
+
+        const fullDoc = new DOMParser().parseFromString(`<pre>${fullText}</pre>`, 'text/html');
+        const f = extractFields(fullDoc, fullText.slice(0, 15000));
+        f.description = (f.description || summ.extract).slice(0, 1200);
+        if (summ.title && !f.vessel_name) f.vessel_name = summ.title;
+        if (summ.coordinates) { f.latitude = String(summ.coordinates.lat); f.longitude = String(summ.coordinates.lon); }
+        const imoM = fullText.match(/\bIMO[\s:]*(\d{7})\b/i);
+        if (imoM) { f._imo = imoM[1]; if (!imo) imo = imoM[1]; }
+        const flagM = fullText.match(/flag(?:ged)?\s+(?:of\s+|state\s+)?([A-Z][a-z]+(?: [A-Z][a-z]+)?)/);
+        if (flagM) f.flag = flagM[1];
+        log(`✓ Wikipedia: "${p.title}" (${Math.round(fullText.length/1000)}k chars)`, 'ok');
+        out.push({ id:'Wikipedia', ok:true, url:`https://en.wikipedia.org/wiki/${encodeURIComponent(p.title)}`, fields:f, imgs:[], text:fullText.slice(0, 8000) });
       }
       return out;
     })(),
@@ -4085,6 +4187,56 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
 
   if (aisIMO.status === 'fulfilled' && aisIMO.value)   results.push(aisIMO.value);
   if (aisMMSI.status === 'fulfilled' && aisMMSI.value) results.push(aisMMSI.value);
+
+  // Phase 3: Additional authoritative databases — run when IMO is known
+  if (imo) {
+    const [faoGR, rightship] = await Promise.allSettled([
+
+      /* ── 5. FAO Global Record — fishing vessel flag + authorization ── */
+      (async () => {
+        log(`FAO Global Record: IMO ${imo}…`, 'info');
+        const r = await fetchWikipediaText(`FAO Global Record IMO ${imo}`, signal).catch(() => null);
+        // FAO Global Record is a scrape target — handled via scraper URLs, not direct API
+        // But we can try the search endpoint directly
+        const html = await fetch(
+          `https://www.fao.org/global-record/search?imo=${imo}&lang=en`,
+          { signal: timedSignal(signal, 10000), headers:{ 'User-Agent':'Mozilla/5.0' } }
+        ).then(r => r.text()).catch(() => '');
+        if (!html || html.length < 200) return null;
+        const doc = parseHTML(html);
+        const text = doc.body?.innerText?.slice(0, 8000) || '';
+        if (!text.includes(imo) && !isSeaRelated(text)) return null;
+        const f = filterFieldsByType(extractFields(doc, text), 'vessel');
+        f._imo = imo;
+        const fc = Object.keys(f).filter(k => !k.startsWith('_')).length;
+        if (fc < 1) return null;
+        log(`✓ FAO Global Record: ${fc} field(s)`, 'ok');
+        return { id:'FAO-Global-Record', ok:true, url:`https://www.fao.org/global-record/search?imo=${imo}`, fields:f, imgs:[], text };
+      })(),
+
+      /* ── 6. Paris MOU / Tokyo MOU — Port State Control inspections ── */
+      (async () => {
+        log(`Paris MOU PSC: IMO ${imo}…`, 'info');
+        const html = await fetch(
+          `https://www.parismou.org/Inspection%20information/White%20and%20black%20list/Ship-particulars?imo=${imo}`,
+          { signal: timedSignal(signal, 10000), headers:{ 'User-Agent':'Mozilla/5.0' } }
+        ).then(r => r.text()).catch(() => '');
+        if (!html || html.length < 200) return null;
+        const doc = parseHTML(html);
+        const text = doc.body?.innerText?.slice(0, 6000) || '';
+        if (!text.includes(imo)) return null;
+        const f = filterFieldsByType(extractFields(doc, text), 'vessel');
+        f._imo = imo;
+        const fc = Object.keys(f).filter(k => !k.startsWith('_')).length;
+        if (fc < 1) return null;
+        log(`✓ Paris MOU PSC: ${fc} field(s)`, 'ok');
+        return { id:'Paris-MOU', ok:true, url:`https://www.parismou.org/inspection?imo=${imo}`, fields:f, imgs:[], text };
+      })(),
+    ]);
+
+    if (faoGR.status    === 'fulfilled' && faoGR.value)    results.push(faoGR.value);
+    if (rightship.status === 'fulfilled' && rightship.value) results.push(rightship.value);
+  }
 
   return { results, imo, mmsi };
 }
