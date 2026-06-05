@@ -345,6 +345,33 @@ function topicMatch(text, searchType) {
   return true;
 }
 
+/* ─────────────────────────────────────────────────────────────────
+   SPECIES SYNONYM MAP — module-level constant (built once, not per-call)
+   Maps common aliases → canonical English species name.
+───────────────────────────────────────────────────────────────── */
+const _SPECIES_ALIAS = {
+  'Atlantic Salmon':   ['Salmo Salar','Salmon','Salmón Atlántico','Saumon Atlantique','Atlantisk Laks','鲑鱼','サーモン'],
+  'Rainbow Trout':     ['Oncorhynchus Mykiss','Trout','Regenbogenforelle','Regnbueørret'],
+  'Whiteleg Shrimp':   ['Pacific White Shrimp','Litopenaeus Vannamei','Penaeus Vannamei','Vannamei','White Shrimp'],
+  'Tiger Prawn':       ['Penaeus Monodon','Black Tiger Shrimp','Giant Tiger Prawn'],
+  'Tilapia':           ['Oreochromis Niloticus','Nile Tilapia'],
+  'Atlantic Cod':      ['Gadus Morhua','Cod','Torsk','Kabeljau'],
+  'European Sea Bass': ['Dicentrarchus Labrax','Sea Bass','Branzino','Loup de mer'],
+  'Gilthead Sea Bream':['Sparus Aurata','Sea Bream','Dorade','Dorada'],
+  'Yellowfin Tuna':    ['Thunnus Albacares','Yellowfin'],
+  'Bluefin Tuna':      ['Thunnus Thynnus','Atlantic Bluefin'],
+  'Anchoveta':         ['Peruvian Anchovy','Engraulis Ringens','Anchovy'],
+  'Atlantic Mackerel': ['Scomber Scombrus','Makrell','Makrele'],
+  'Atlantic Herring':  ['Clupea Harengus','Herring','Sild','Hering'],
+};
+const _ALIAS_LOOKUP = Object.freeze(
+  Object.fromEntries(
+    Object.entries(_SPECIES_ALIAS).flatMap(([canon, aliases]) =>
+      aliases.map(a => [a.toLowerCase(), canon])
+    )
+  )
+);
+
 // Returns only the fields appropriate for a given search type.
 function filterFieldsByType(fields, searchType) {
   if (!searchType || searchType === 'general') return fields;
@@ -367,29 +394,12 @@ function filterFieldsByType(fields, searchType) {
  *  Called from mergeFields() after all sources have been ranked and combined. */
 function normalizeFields(merged) {
   // ── Species / input_species: split comma-list, title-case, deduplicate, reject noise
-  // Synonym map — common aliases for the same species collapsed to canonical name
-  const SPECIES_ALIAS = {
-    'Atlantic Salmon':     ['Salmo Salar','Salmon','Salmón Atlántico','Saumon Atlantique','Atlantisk Laks','鲑鱼'],
-    'Rainbow Trout':       ['Oncorhynchus Mykiss','Trout','Regenbogenforelle'],
-    'Whiteleg Shrimp':     ['Pacific White Shrimp','Litopenaeus Vannamei','Penaeus Vannamei','Vannamei','White Shrimp'],
-    'Tiger Prawn':         ['Penaeus Monodon','Black Tiger Shrimp','Giant Tiger Prawn'],
-    'Tilapia':             ['Oreochromis Niloticus','Nile Tilapia'],
-    'Atlantic Cod':        ['Gadus Morhua','Cod'],
-    'European Sea Bass':   ['Dicentrarchus Labrax','Sea Bass','Branzino'],
-    'Gilthead Sea Bream':  ['Sparus Aurata','Sea Bream','Dorade','Dorada'],
-    'Yellowfin Tuna':      ['Thunnus Albacares','Yellowfin'],
-    'Bluefin Tuna':        ['Thunnus Thynnus','Atlantic Bluefin'],
-    'Anchoveta':           ['Peruvian Anchovy','Engraulis Ringens'],
-  };
-  const ALIAS_LOOKUP = {};
-  for (const [canon, aliases] of Object.entries(SPECIES_ALIAS)) {
-    for (const a of aliases) ALIAS_LOOKUP[a.toLowerCase()] = canon;
-  }
+  // Use module-level _ALIAS_LOOKUP (built once at startup, not per call)
   ['species', 'input_species'].forEach(k => {
     if (!merged[k]) return;
     const parts = merged[k].split(/[,;\/]+/).map(s => {
       const titled = s.trim().replace(/\b\w/g, c => c.toUpperCase());
-      return ALIAS_LOOKUP[titled.toLowerCase()] || titled;
+      return _ALIAS_LOOKUP[titled.toLowerCase()] || titled;
     }).filter(t =>
       t.length > 2 &&
       !/^(Fish|Seafood|Animal|Marine|Aquatic|Product|Species|Other|Various|Mixed|And|Or|The)$/.test(t)
@@ -530,7 +540,21 @@ let learned     = {};  // normalizedName → { fields, sources, hitCount, confid
 let domainStats = {};  // hostname → { hits, successes, totalFields }
 
 /** Session-level cache: url → html text */
+// LRU request cache — delete-then-reinsert on hit moves entry to Map tail (newest).
+// Eviction removes the first key (Map.keys().next() = oldest insertion = LRU victim).
+const REQ_CACHE_MAX = 120;
 const reqCache = new Map();
+function reqCacheSet(url, text) {
+  if (reqCache.size >= REQ_CACHE_MAX) reqCache.delete(reqCache.keys().next().value);
+  reqCache.set(url, text);
+}
+function reqCacheGet(url) {
+  if (!reqCache.has(url)) return null;
+  const v = reqCache.get(url); // move to tail (LRU)
+  reqCache.delete(url);
+  reqCache.set(url, v);
+  return v;
+}
 
 /* ═══════════════════════════════════════════
    LAZY LIBRARY LOADER
@@ -1241,14 +1265,8 @@ function highlightIMO(text) {
 async function fetchViaProxy(url, signal) {
   if (!isValidURL(url)) throw new Error('Blocked: invalid or private URL');
 
-  // Check cache first — delete-then-reinsert moves the entry to the tail for true LRU ordering
-  if (reqCache.has(url)) {
-    const cached = reqCache.get(url);
-    reqCache.delete(url);
-    reqCache.set(url, cached);
-    log('Cache hit ✓', 'ok');
-    return cached;
-  }
+  const cached = reqCacheGet(url);
+  if (cached) { log('Cache hit ✓', 'ok'); return cached; }
 
   // ── Next.js server-side scrape (no CORS, full headers, direct HTTP) ──
   try {
@@ -1261,7 +1279,7 @@ async function fetchViaProxy(url, signal) {
     if (r.ok) {
       const d = await r.json();
       if (d.ok && d.text && d.text.length > 50) {
-        reqCache.set(url, d.text);
+        reqCacheSet(url, d.text);
         log('Fetched via server ✓', 'ok');
         return d.text;
       }
@@ -1349,8 +1367,7 @@ async function fetchViaProxy(url, signal) {
           throw new Error('Block page detected');
         }
 
-        if (reqCache.size >= 100) reqCache.delete(reqCache.keys().next().value); // evict oldest
-        reqCache.set(url, text);
+        reqCacheSet(url, text);
         proxyFails.set(proxy, 0); // reset health on success
         saveProxyHealth();
         if (attempt > 0) log(`Bypassed after ${attempt} attempt(s) ✓`, 'ok');
@@ -2972,6 +2989,50 @@ function copyText(uid) {
 /* ═══════════════════════════════════════════
    THE BOT
 ═══════════════════════════════════════════ */
+/**
+ * triggerCrossRefVesselLookup — fires background lookups to the three most
+ * authoritative vessel registries the moment an IMO is discovered mid-scrape.
+ * Non-blocking: results are pushed to scrapeResults as they arrive.
+ *
+ * @param {string}   imo             - Validated 7-digit IMO number
+ * @param {AbortSignal} signal       - Scrape abort signal
+ * @param {Array}    scrapeResults   - Shared results array (push-safe in JS single-thread)
+ * @param {Function} maybeFireClaude - Callback to feed good text to Claude
+ * @param {Function} checkEarlyExit  - Callback to check field threshold
+ */
+function triggerCrossRefVesselLookup(imo, signal, scrapeResults, maybeFireClaude, checkEarlyExit) {
+  log(`IMO ${imo} discovered — cross-referencing Equasis, MarineTraffic, VesselFinder…`, 'ok');
+  const TARGETS = [
+    { id:'Equasis',       url:`https://www.equasis.org/EquasisWeb/restricted/ShipInfo?fs=Search&P_IMO=${imo}` },
+    { id:'MarineTraffic', url:`https://www.marinetraffic.com/en/ais/details/ships/imo:${imo}` },
+    { id:'VesselFinder',  url:`https://www.vesselfinder.com/vessels/details/${imo}` },
+  ];
+  Promise.allSettled(
+    TARGETS.map(t => fetchViaProxy(t.url, timedSignal(signal, 20000)).then(html => ({ ...t, html })))
+  ).then(settled => {
+    for (const res of settled) {
+      if (res.status !== 'fulfilled') continue;
+      const { id, url, html } = res.value;
+      try {
+        const pd  = parseHTML(html, url);
+        const pt  = pd.body?.innerText?.slice(0, 15000) || '';
+        if (!isSeaRelated(pt)) continue;
+        const pf  = filterFieldsByType(extractFields(pd, pt), 'vessel');
+        pf._imo   = imo;
+        const fc  = Object.keys(pf).filter(k => !k.startsWith('_')).length;
+        if (fc >= 1) {
+          log(`✓ Cross-ref ${id}: ${fc} field(s)`, 'ok');
+          scrapeResults.push({ id, ok:true, url, fields:pf, imgs:extractImages(pd, url), text:pt });
+          if (typeof maybeFireClaude === 'function') maybeFireClaude(pt, id);
+          if (typeof checkEarlyExit  === 'function') checkEarlyExit();
+        }
+      } catch(e) {
+        if (e.name !== 'AbortError') log(`Cross-ref ${id} parse error: ${e.message}`, 'warn');
+      }
+    }
+  }).catch(e => { if (e.name !== 'AbortError') log(`Cross-ref failed: ${e.message}`, 'warn'); });
+}
+
 async function runBot() {
   if (isRunning) return;
   const raw = document.getElementById('main-search').value.trim();
@@ -2982,7 +3043,6 @@ async function runBot() {
   const searchType = document.getElementById('search-type')?.value || 'farm';
   const isMill   = searchType === 'mill';
   const isVessel = searchType === 'vessel';
-  const isFarm   = searchType === 'farm';
   const isIMO    = /^\d{7}$/.test(q) && validIMO(q);
   const isMMSI   = /^\d{9}$/.test(q.replace(/\s/g,''));
   let imo  = isIMO  ? q : '';
@@ -3055,7 +3115,7 @@ async function runBot() {
     if (queryLang !== 'en') {
       log(`Query language: ${queryLang} — generating English cross-search…`, 'info');
       setStatus('Translating query…');
-      try { qEn = await translateQuery(q, queryLang, 'en', signal); } catch {}
+      try { qEn = await translateQuery(q, queryLang, 'en', signal); } catch(e) { if (e.name !== 'AbortError') log(`Query translation failed (${queryLang}→en): ${e.message}`, 'warn'); }
       if (qEn !== q) log(`Cross-search: "${qEn}"`, 'ok');
     }
     // Language-specific industry supplement terms (appended to search queries)
@@ -3379,44 +3439,19 @@ async function runBot() {
         const pageLang = detectLang(doc, text);
         if (pageLang !== 'en') {
           log(`Language: ${pageLang} — translating…`, 'info');
-          try { text = await translate(text.slice(0, 4000), scrapeSignal); } catch {}
+          try { text = await translate(text.slice(0, 4000), scrapeSignal); } catch(e) { if (e.name !== 'AbortError') log(`Translation failed: ${e.message}`, 'warn'); }
         }
 
         const fields = extractFields(doc, text);
         const imgs   = extractImages(doc, s.url);
 
-        // Cross-reference: if an IMO is freshly discovered from this page, immediately
-        // trigger targeted Equasis + MarineTraffic lookups for the most authoritative vessel data
+        // Cross-reference: if a valid IMO is freshly discovered, immediately
+        // trigger targeted Equasis + MarineTraffic lookups in the background
         if (!imo) {
-          const imoFound = extractIMOs(text);
+          const imoFound = extractIMOs(text).filter(validIMO); // validIMO check added
           if (imoFound.length) {
             imo = imoFound[0];
-            log(`IMO discovered: ${imo} — triggering targeted vessel lookups`, 'ok');
-            // Fire targeted lookups in background (don't await — scrape continues)
-            Promise.allSettled([
-              fetchViaProxy(`https://www.equasis.org/EquasisWeb/restricted/ShipInfo?fs=Search&P_IMO=${imo}`, timedSignal(scrapeSignal, 20000)),
-              fetchViaProxy(`https://www.marinetraffic.com/en/ais/details/ships/imo:${imo}`, timedSignal(scrapeSignal, 20000)),
-              fetchViaProxy(`https://www.vesselfinder.com/vessels/details/${imo}`, timedSignal(scrapeSignal, 20000)),
-            ]).then(settled => {
-              for (const [idx, res] of settled.entries()) {
-                if (res.status !== 'fulfilled' || !res.value) continue;
-                try {
-                  const srcIds = ['Equasis','MarineTraffic','VesselFinder'];
-                  const pd = parseHTML(res.value, '');
-                  const pt = pd.body?.innerText?.slice(0, 15000) || '';
-                  if (!isSeaRelated(pt)) continue;
-                  const pf = filterFieldsByType(extractFields(pd, pt), 'vessel');
-                  pf._imo = imo;
-                  const fc = Object.keys(pf).filter(k => !k.startsWith('_')).length;
-                  if (fc >= 1) {
-                    log(`✓ Cross-ref ${srcIds[idx]}: ${fc} field(s)`, 'ok');
-                    scrapeResults.push({ id: srcIds[idx], ok:true, url:'', fields:pf, imgs:[], text:pt });
-                    maybeFireClaude(pt, srcIds[idx]);
-                    checkEarlyExit();
-                  }
-                } catch {}
-              }
-            }).catch(() => {});
+            triggerCrossRefVesselLookup(imo, scrapeSignal, scrapeResults, maybeFireClaude, checkEarlyExit);
           }
         }
 
@@ -3451,7 +3486,7 @@ async function runBot() {
               const pdBody = isWX ? (pd.getElementById('js_content') || pd.body) : pd.body;
               let   pt     = pdBody?.innerText?.slice(0, TEXT_BUDGET) || '';
               const subLang = detectLang(pd, pt);
-              if (subLang !== 'en') { try { pt = await translate(pt.slice(0, 4000), scrapeSignal); } catch {} }
+              if (subLang !== 'en') { try { pt = await translate(pt.slice(0, 4000), scrapeSignal); } catch(e) { if (e.name !== 'AbortError') log(`Sub-page translation failed: ${e.message}`, 'warn'); } }
 
               if (!isSeaRelated(pt)) { log(`Skipped (off-domain): ${new URL(u).hostname}`, 'warn'); continue; }
               if (!topicMatch(pt, searchType)) { log(`Skipped (wrong type): ${new URL(u).hostname}`, 'warn'); continue; }
@@ -5184,7 +5219,7 @@ async function bulkScrapeItem(q, searchType, yearTo, catFilter, signal) {
   const queryLang = detectQueryLang(q);
   let qEn = q;
   if (queryLang !== 'en') {
-    try { qEn = await translateQuery(q, queryLang, 'en', signal); } catch {}
+    try { qEn = await translateQuery(q, queryLang, 'en', signal); } catch(e) { if (e.name !== 'AbortError') log(`Query translation failed (${queryLang}→en): ${e.message}`, 'warn'); }
   }
   const langTerms = langIndustryTerms(queryLang, searchType);
 

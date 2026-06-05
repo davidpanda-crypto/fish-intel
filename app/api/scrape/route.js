@@ -128,7 +128,11 @@ export async function POST(request) {
     clearTimeout(timeout);
 
     if (!res.ok) {
-      return NextResponse.json({ ok: false, error: `HTTP ${res.status}`, status: res.status });
+      const retryAfter = res.headers.get('retry-after');
+      return NextResponse.json(
+        { ok: false, error: `HTTP ${res.status}`, status: res.status },
+        retryAfter ? { headers: { 'Retry-After': retryAfter } } : {}
+      );
     }
 
     const text = await res.text();
