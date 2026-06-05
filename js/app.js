@@ -1495,7 +1495,47 @@ async function fetchViaProxy(url, signal) {
     // Small gap between switching proxies
     await jitter(200);
   }
-  throw lastErr || new Error('All proxies exhausted after retries');
+  // All proxies exhausted — try mobile/AMP variants as last resort
+  // Many sites that block bots serve simpler mobile or AMP pages
+  try {
+    const u = new URL(url);
+    const mobileTries = [];
+
+    // 1. Google AMP cached version — bypasses JS rendering and many paywalls
+    mobileTries.push(`https://www.google.com/amp/s/${u.hostname}${u.pathname}${u.search}`);
+
+    // 2. Mobile subdomain (m.example.com or mobile.example.com)
+    if (!u.hostname.startsWith('m.') && !u.hostname.startsWith('mobile.')) {
+      mobileTries.push(`${u.protocol}//m.${u.hostname}${u.pathname}${u.search}`);
+    }
+
+    // 3. stripped query — some sites serve more content without UTM/tracking params
+    if (u.search && u.search.length > 1) {
+      mobileTries.push(`${u.protocol}//${u.hostname}${u.pathname}`);
+    }
+
+    for (const mUrl of mobileTries) {
+      if (!isValidURL(mUrl)) continue;
+      try {
+        const resp = await fetch(PROXIES[0] + encodeURIComponent(mUrl), {
+          signal: timedSignal(signal, 8000),
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+            'Accept': 'text/html,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+          },
+        });
+        if (!resp.ok) continue;
+        const text = await resp.text();
+        if (text.length > 200 && !isPaywalled(text)) {
+          reqCacheSet(url, text); // cache under original URL
+          return text;
+        }
+      } catch(e) { if (e.name === 'AbortError') throw e; }
+    }
+  } catch(e) { if (e.name === 'AbortError') throw e; }
+
+  throw lastErr || new Error('All proxies and fallbacks exhausted');
 }
 
 function parseHTML(html, sourceURL) {
@@ -3771,54 +3811,175 @@ async function runBot() {
       if (cacheHits > 0) log(`Cache filled ${cacheHits} missing field${cacheHits>1?'s':''}`, 'ok');
     }
 
-    // Broad retry: if fewer than 3 real fields found AND no confident cache covers us
+    // ── Deep search cascade: runs when initial scrape is sparse ─────────────
+    // Each round uses a different strategy. Stops as soon as enough fields are found.
     const populatedCount = Object.keys(merged).filter(k => !k.startsWith('_') && merged[k]).length;
-    const cacheCovers = priorKnowledge && priorKnowledge.confidence >= 0.75;
-    if (populatedCount < 3 && !signal.aborted && !cacheCovers) {
-      log(`Only ${populatedCount} field(s) found — running broad retry…`, 'warn');
-      const retryQ   = isVessel ? `${q} vessel ship` : isMill ? `${q} fishmeal plant` : `${q} aquaculture`;
-      const retryCNQ = isVessel ? `${q} 船舶 船名` : isMill ? `${q} 鱼粉厂` : `${q} 水产养殖`;
-      const retryURLs = [
-        `https://www.bing.com/search?q=${encodeURIComponent(retryQ)}`,
-        `https://html.duckduckgo.com/html/?q=${encodeURIComponent(retryQ)}`,
-        `https://www.google.com/search?q=${encodeURIComponent(retryCNQ)}&num=10&hl=zh-CN&gl=cn`,
-      ];
-      for (const rUrl of retryURLs) {
-        if (signal.aborted) break;
+    const cacheCovers    = priorKnowledge && priorKnowledge.confidence >= 0.75;
+
+    if (populatedCount < 4 && !signal.aborted && !cacheCovers) {
+      log(`Only ${populatedCount} field(s) — running deep search cascade…`, 'warn');
+      setStatus('Running deep search…');
+
+      /**
+       * Scrape a single URL and push any findings into scrapeResults.
+       * Returns field count found (0 if nothing useful).
+       */
+      async function deepScrapeURL(url, label) {
+        if (signal.aborted) return 0;
         try {
-          const rHtml = await fetchViaProxy(rUrl, signal);
-          const rDoc  = parseHTML(rHtml, rUrl);
-          // DOM-based link extraction — same quality as the main scrape loop
-          const rAnchors = [...rDoc.querySelectorAll('a[href]')];
-          const rDiscovered = [];
-          for (const a of rAnchors) {
-            try {
-              const href = new URL(a.href || a.getAttribute('href'), rUrl).href;
-              if (isValidURL(href) && !rDiscovered.includes(href)) rDiscovered.push(href);
-            } catch {}
+          let html = await fetchViaProxy(url, timedSignal(signal, 22000));
+          const doc  = parseHTML(html, url);
+          let   text = doc.body?.innerText?.slice(0, 15000) || '';
+          const lang = detectLang(doc, text);
+          if (lang !== 'en') { try { text = await translate(text.slice(0, 4000), signal); } catch(e) { if (e.name === 'AbortError') throw e; } }
+          if (!isSeaRelated(text) && relevanceScore(text, q) === 0 && relevanceScore(text, qEn) === 0) return 0;
+          const pf = filterFieldsByType(extractFields(doc, text), searchType);
+          const fc = Object.keys(pf).filter(k => !k.startsWith('_')).length;
+          if (fc >= 1) {
+            log(`✓ Deep search [${label}]: ${fc} field(s)`, 'ok');
+            scrapeResults.push({ id: label, ok:true, url, fields:pf, imgs:extractImages(doc, url), text });
+            if (claudeKey || _serverAIReady) claudeTexts.push({ source: label, text });
           }
-          const rTopURLs = [...new Set(rDiscovered)].slice(0, 12); // 12 links in retry too
-          for (const ru of rTopURLs) {
-            if (signal.aborted) break;
-            try {
-              const rPh = await fetchViaProxy(ru, signal);
-              const rPd = parseHTML(rPh, ru);
-              let rPt = rPd.body?.innerText?.slice(0, 15000) || '';
-              const rLang = detectLang(rPd, rPt);
-              if (rLang !== 'en') { try { rPt = await translate(rPt.slice(0, 4000), signal); } catch {} }
-              if (relevanceScore(rPt, q) === 0 && relevanceScore(rPt, qEn || q) === 0) continue;
-              if (!isSeaRelated(rPt)) continue;
-              const rPf = filterFieldsByType(extractFields(rPd, rPt), searchType);
-              if (Object.keys(rPf).filter(k => !k.startsWith('_')).length >= 1) {
-                scrapeResults.push({ id: new URL(ru).hostname, ok:true, url:ru, fields:rPf, imgs:extractImages(rPd, ru), text:rPt });
-                log(`✓ Retry found: ${new URL(ru).hostname}`, 'ok');
-              }
-            } catch {}
-          }
-        } catch {}
+          return fc;
+        } catch(e) {
+          if (e.name === 'AbortError') throw e;
+          log(`Deep search [${label}] failed: ${e.message}`, 'warn');
+          return 0;
+        }
       }
+
+      /**
+       * Follow top links from a search engine result page and scrape each one.
+       */
+      async function deepFollowLinks(searchUrl, label, maxLinks = 10) {
+        if (signal.aborted) return;
+        try {
+          const html    = await fetchViaProxy(searchUrl, timedSignal(signal, 20000));
+          const doc     = parseHTML(html, searchUrl);
+          const anchors = [...doc.querySelectorAll('a[href]')];
+          const links   = [];
+          for (const a of anchors) {
+            try {
+              const href = new URL(a.href || a.getAttribute('href'), searchUrl).href;
+              if (isValidURL(href) && !links.includes(href)) links.push(href);
+            } catch {}
+          }
+          for (const u of [...new Set(links)].slice(0, maxLinks)) {
+            if (signal.aborted) break;
+            await deepScrapeURL(u, new URL(u).hostname);
+          }
+        } catch(e) { if (e.name === 'AbortError') throw e; }
+      }
+
+      // ── Round 1: Broader keyword search — no site: filter, no quotes ──────
+      if (!signal.aborted) {
+        log('Deep search Round 1: broader keywords…', 'info');
+        const r1Q = isVessel
+          ? `${qEn} vessel IMO flag tonnage owner operator`
+          : isMill ? `${qEn} fishmeal fish oil processing plant capacity`
+                   : `${qEn} aquaculture farm species capacity certification`;
+        await deepFollowLinks(`https://www.bing.com/search?q=${encodeURIComponent(r1Q)}&count=20`, 'Bing-Deep-1');
+        await deepFollowLinks(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(r1Q)}`, 'DDG-Deep-1');
+      }
+
+      // ── Round 2: PDF hunting — annual reports, sustainability reports ──────
+      if (!signal.aborted && Object.keys(mergeFields(scrapeResults, q)).filter(k => !k.startsWith('_')).length < 4) {
+        log('Deep search Round 2: PDF hunting…', 'info');
+        const pdfQ = isVessel
+          ? `"${qEn}" vessel ship annual report filetype:pdf`
+          : `"${qEn}" aquaculture annual report sustainability filetype:pdf`;
+        await deepFollowLinks(`https://www.google.com/search?q=${encodeURIComponent(pdfQ)}&num=10`, 'Google-PDF');
+        await deepFollowLinks(`https://www.bing.com/search?q=${encodeURIComponent(pdfQ)}&count=10`, 'Bing-PDF');
+      }
+
+      // ── Round 3: News archives — trade press, industry news ──────────────
+      if (!signal.aborted && Object.keys(mergeFields(scrapeResults, q)).filter(k => !k.startsWith('_')).length < 4) {
+        log('Deep search Round 3: news archives…', 'info');
+        const newsQ = `"${qEn}" ${isVessel ? 'vessel ship' : isMill ? 'fishmeal processing' : 'aquaculture farm'}`;
+        const newsSites = isVessel
+          ? 'site:tradewindsnews.com OR site:lloydslist.com OR site:hellenicshippingnews.com OR site:maritime-executive.com OR site:seatrade-maritime.com'
+          : isMill ? 'site:undercurrentnews.com OR site:seafoodsource.com OR site:allaboutfeed.net OR site:fis.com'
+                   : 'site:seafoodsource.com OR site:undercurrentnews.com OR site:intrafish.com OR site:fishfarmermagazine.com OR site:fishfarmingexpert.com';
+        await deepFollowLinks(`https://www.bing.com/search?q=${encodeURIComponent(newsQ + ' ' + newsSites)}`, 'News-Archives', 8);
+      }
+
+      // ── Round 4: Company registry reverse lookup ───────────────────────────
+      if (!signal.aborted && Object.keys(mergeFields(scrapeResults, q)).filter(k => !k.startsWith('_')).length < 4) {
+        log('Deep search Round 4: company registries…', 'info');
+        const companySearches = [
+          // Norwegian Business Registry (Brønnøysund) — covers all Norwegian companies
+          { url:`https://www.brreg.no/finn-foretak/enhet/${encodeURIComponent(qEn)}/`, label:'Brønnøysund-NO' },
+          // UK Companies House — free company data
+          { url:`https://find-and-update.company-information.service.gov.uk/search?q=${encodeURIComponent(qEn)}`, label:'CompaniesHouse-UK' },
+          // SEC EDGAR — US-listed companies (incl. ADRs of large aquaculture groups)
+          { url:`https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(qEn)}%22&dateRange=custom&startdt=2020-01-01&forms=10-K,20-F`, label:'SEC-EDGAR' },
+          // OpenCorporates — global company registry aggregator
+          { url:`https://opencorporates.com/companies?q=${encodeURIComponent(qEn)}&utf8=✓`, label:'OpenCorporates' },
+        ];
+        for (const { url, label } of companySearches) {
+          if (signal.aborted) break;
+          await deepScrapeURL(url, label);
+        }
+      }
+
+      // ── Round 5: Academic & research databases ─────────────────────────────
+      if (!signal.aborted && Object.keys(mergeFields(scrapeResults, q)).filter(k => !k.startsWith('_')).length < 4) {
+        log('Deep search Round 5: academic sources…', 'info');
+        const acadQ = isVessel
+          ? `${qEn} vessel fleet fishing shipping`
+          : `${qEn} aquaculture production species capacity`;
+        const academicSources = [
+          { url:`https://scholar.google.com/scholar?q=${encodeURIComponent(acadQ)}&hl=en&num=10`, label:'Google-Scholar' },
+          { url:`https://www.semanticscholar.org/search?q=${encodeURIComponent(acadQ)}&sort=Relevance`, label:'SemanticScholar' },
+          { url:`https://www.fao.org/fishery/en/search?query=${encodeURIComponent(qEn)}&section=all`, label:'FAO-Full-Search' },
+        ];
+        if (isVessel) academicSources.push(
+          // Global Fishing Watch — free satellite-based fishing vessel tracking
+          { url:`https://globalfishingwatch.org/map/?q=${encodeURIComponent(qEn)}`, label:'GlobalFishingWatch' },
+          // Maritime Connector — free vessel database
+          { url:`https://maritime-connector.com/ship/${encodeURIComponent(qEn.toLowerCase().replace(/\s+/g,'-'))}/`, label:'MaritimeConnector' },
+        );
+        for (const { url, label } of academicSources) {
+          if (signal.aborted) break;
+          await deepScrapeURL(url, label);
+        }
+      }
+
+      // ── Round 6: Operator/parent company reverse lookup ────────────────────
+      // If we found an operator/owner name but not the entity itself, search for that
+      const prelimMerge = mergeFields(scrapeResults, q);
+      const knownOperator = prelimMerge.operator || prelimMerge.owner || prelimMerge.manager;
+      if (!signal.aborted && knownOperator && knownOperator !== q &&
+          Object.keys(prelimMerge).filter(k => !k.startsWith('_')).length < 6) {
+        log(`Deep search Round 6: reverse lookup via operator "${knownOperator}"…`, 'info');
+        const opQ = isVessel
+          ? `"${knownOperator}" vessel fleet IMO registry`
+          : `"${knownOperator}" aquaculture farm facility`;
+        await deepFollowLinks(`https://www.bing.com/search?q=${encodeURIComponent(opQ)}`, 'Operator-Reverse', 8);
+        await deepFollowLinks(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(opQ)}`, 'Operator-DDG', 6);
+      }
+
+      // ── Round 7: Non-English deep search with native language terms ──────────
+      if (!signal.aborted && queryLang !== 'en' &&
+          Object.keys(mergeFields(scrapeResults, q)).filter(k => !k.startsWith('_')).length < 4) {
+        log(`Deep search Round 7: native language deep search (${queryLang})…`, 'info');
+        const nativeQ = `${q} ${langTerms}`;
+        const nativeSrcs = langSpecificSources(q, qEn, queryLang, searchType);
+        for (const s of nativeSrcs.slice(0, 4)) {
+          if (signal.aborted) break;
+          await deepFollowLinks(s.url, s.id, 8);
+        }
+        // Also try Yandex for Slavic/Russian entities, Naver for Korean
+        if (queryLang === 'ru') await deepFollowLinks(`https://yandex.ru/search/?text=${encodeURIComponent(nativeQ)}`, 'Yandex-Deep', 8);
+        if (queryLang === 'ko') await deepFollowLinks(`https://search.naver.com/search.naver?query=${encodeURIComponent(nativeQ)}`, 'Naver-Deep', 8);
+        if (queryLang === 'ja') await deepFollowLinks(`https://search.yahoo.co.jp/search?p=${encodeURIComponent(nativeQ)}`, 'YahooJP-Deep', 8);
+      }
+
+      // Re-merge with all newly found results
       merged = mergeFields(scrapeResults, q);
       if (imo) merged._imo = merged._imo || imo;
+      const newCount = Object.keys(merged).filter(k => !k.startsWith('_')).length;
+      log(`Deep search complete — ${newCount} field(s) total (was ${populatedCount})`, newCount > populatedCount ? 'ok' : 'warn');
     }
 
     // ── Claude: fire on all accumulated pages if not yet triggered ────────
