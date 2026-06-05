@@ -1661,6 +1661,82 @@ async function translateQuery(q, fromLang, toLang, signal) {
 }
 
 /**
+ * detectEntityOrigin — heuristic country/language detection from company name patterns.
+ * Used to add the right national registries even when the query is in English.
+ *
+ * Returns a language code ('no','zh','es','ru','ja','ko','fr','de','pt','en')
+ * or null if no confident match.
+ */
+function detectEntityOrigin(q) {
+  const t = q.trim().toLowerCase();
+
+  // Norwegian patterns — AS/ASA suffix, common salmon company names
+  if (/\b(?:as|asa|seafood|laks|fisk|sjø|havbruk|mowi|salmar|grieg|lerøy|cermaq|bakkafrost|nova sea|nova sjøfarm)\b/.test(t)) return 'no';
+  // Chinese patterns — Group/Holdings/Co.Ltd in Chinese context, or known Chinese companies
+  if (/\b(?:group|holdings|co\.?\s*ltd|zoneco|evergreen|cosco|sinopec|china ocean|yantai|dalian|qingdao|guangdong|fujian|zhejiang|shandong|guangzhou)\b/.test(t) && !/salmon|salmar|grieg/.test(t)) return 'zh';
+  if (/[一-鿿぀-ヿ가-힯]/.test(q)) return 'zh'; // CJK characters
+  // Spanish/Latin American
+  if (/\b(?:salmones|acuicola|pesca|pesquera|alimentos|s\.a\.|ltda|aquachile|multiexport|cermaq chile|skretting chile|biomar chile)\b/.test(t)) return 'es';
+  // Chilean suffix
+  if (/s\.a\.$|ltda\.$|ltda\b/.test(t) && !/s\.a\.s\.|inc\.|llc/.test(t)) return 'es';
+  // Japanese
+  if (/\b(?:kaisha|kabushiki|suisan|gyogyo|nippon|japan|nihon|maruha|nichiro|nissui|kyokuyo)\b/.test(t)) return 'ja';
+  // Korean
+  if (/\b(?:haeseo|suhyup|dongwon|chungjungone|cj|lotte|korea|korean)\b/.test(t)) return 'ko';
+  // Russian
+  if (/\b(?:ryba|rybak|rybprom|rossiya|russian|rusfish|norebo|volna|vostok)\b/.test(t)) return 'ru';
+  // French
+  if (/\b(?:bretagne|atlantique|france|mer|poisson|pêche|sa$)\b/.test(t) && /france|bretagne|atlantique/i.test(t)) return 'fr';
+  // German
+  if (/\b(?:gmbh|ag$|fischerei|nord|nordsee|frozen)\b/.test(t)) return 'de';
+  return null; // unknown origin
+}
+
+/**
+ * getAlwaysOnLanguageSources — sources that run for EVERY search regardless of query language.
+ * China = #1 aquaculture nation; Norway = #1 salmon; Chile/Peru = #1 fishmeal.
+ * These three should always be checked even when the query is in English.
+ */
+function getAlwaysOnLanguageSources(q, qEn, searchType) {
+  const enc   = encodeURIComponent(q);
+  const encEn = encodeURIComponent(qEn);
+  const isV = searchType === 'vessel';
+  const isM = searchType === 'mill';
+  const sources = [];
+
+  // ── Chinese (ALWAYS) — China is the world's #1 aquaculture + fishing nation ──
+  const zhTerms = encodeURIComponent(langIndustryTerms('zh', searchType));
+  sources.push(
+    { id:'Global-CN-Always',   url:`https://www.google.com/search?q=${encEn}+${zhTerms}&num=10&hl=zh-CN&gl=cn`, _cn:true },
+    { id:'Baidu-Always',       url:`https://www.baidu.com/s?wd=${encEn}+${zhTerms}&rn=10`, _cn:true, _fallback:true },
+    { id:'WeChat-Always',      url:`https://weixin.sogou.com/weixin?type=2&query=${encEn}`, _cn:true, _wechat:true },
+  );
+
+  // ── Norwegian (ALWAYS for farms + vessels) — Norway = #1 salmon producer worldwide ──
+  if (!isM) {
+    const noTerms = encodeURIComponent(langIndustryTerms('no', searchType));
+    sources.push(
+      { id:'Google-NO-Always', url:`https://www.google.no/search?q=${encEn}+${noTerms}&hl=no&gl=no&num=10`, _lang:'no' },
+      { id:'Fiskeridir-Always',url:`https://www.fiskeridir.no/Akvakultur/Registre-og-skjema/Akvakulturregisteret?s=${encEn}`, _lang:'no' },
+    );
+    if (isV) sources.push(
+      { id:'Sjøfart-Always',   url:`https://www.sjofartsdir.no/sjofart/fartoy/fartoyregisteret/?sok=${encEn}`, _lang:'no' },
+    );
+  }
+
+  // ── Spanish (ALWAYS for mills + farms) — Chile/Peru = #1 fishmeal + #2 salmon ──
+  if (!isV) {
+    const esTerms = encodeURIComponent(langIndustryTerms('es', searchType));
+    sources.push(
+      { id:'Google-ES-Always', url:`https://www.google.es/search?q=${encEn}+${esTerms}&hl=es&gl=es&num=10`, _lang:'es' },
+      { id:'Google-CL-Always', url:`https://www.google.cl/search?q=${encEn}+${esTerms}&hl=es&gl=cl&num=10`, _lang:'es' },
+    );
+  }
+
+  return sources;
+}
+
+/**
  * Industry-specific search terms for each language / facility type.
  * These are appended to search queries so language-specific results surface.
  */
@@ -2641,6 +2717,9 @@ const SOURCE_RANK = [
   'Web-Discovery','DDG-Search','Google-Search','Google-CN',             // web search result pages
   'Wikipedia','MMSI-Decode','AIS-Registry',                             // encyclopedic / AIS
   'Bing-EN-Xlat',                                                      // cross-search (same trust as Web-Discovery)
+  'Global-CN-Always','Baidu-Always','WeChat-Always',                   // always-on Chinese
+  'Google-NO-Always','Google-ES-Always','Google-CL-Always',            // always-on Nordic/Spanish
+  'Fiskeridir-Always','Sjøfart-Always',                                // always-on Norwegian registries
   'Bing-NO','Bing-ES','Bing-PT','Bing-FR','Bing-DE','Bing-JA','Bing-KO','Bing-AR','Bing-RU', // lang-specific Bing
   'WeChat-Bing','WeChat-Sogou-Articles','WeChat-Sogou-Accounts','WeChat-Industry', // WeChat search
   'mp.weixin.qq.com',                                                  // WeChat article pages (direct)
@@ -3273,7 +3352,21 @@ async function runBot() {
     // Language-specific industry supplement terms (appended to search queries)
     const langTerms = langIndustryTerms(queryLang, searchType);
 
-    log(`Query: "${q}" — type: ${searchType}${queryLang !== 'en' ? ` [${queryLang}]` : ''}`, 'info');
+    // Detect likely country of origin from entity name patterns
+    // This fires even for English queries — "Mowi ASA" → 'no', "Zoneco" → 'zh'
+    const entityOrigin = detectEntityOrigin(q);
+    if (entityOrigin && entityOrigin !== queryLang) {
+      log(`Entity origin detected: ${entityOrigin.toUpperCase()} — adding ${entityOrigin.toUpperCase()} sources`, 'info');
+    }
+
+    // If entity is from a non-English country, also translate the name to that language
+    // e.g. "Dalian Zoneco" → try searching in Chinese as well as English
+    let qOriginLang = q;
+    if (entityOrigin && entityOrigin !== 'en' && entityOrigin !== queryLang) {
+      try { qOriginLang = await translateQuery(q, 'en', entityOrigin, signal); } catch(e) { if (e.name === 'AbortError') throw e; }
+    }
+
+    log(`Query: "${q}" — type: ${searchType}${queryLang !== 'en' ? ` [${queryLang}]` : ''}${entityOrigin && entityOrigin !== queryLang ? ` | origin: ${entityOrigin}` : ''}`, 'info');
     setProgress(20); setStatus('Building source list…');
 
     /* Step 2: Scrape farm / mill details */
@@ -3425,10 +3518,42 @@ async function runBot() {
       scraperURLs.push({ id:'Google-Search', url:`https://www.google.com/search?q=${encodeURIComponent(googleQ.trim())}&num=20&hl=en&gl=us` });
 
       // Language-specific official registries (Norwegian, Spanish, Japanese, etc.)
+      // 1 ── Query-language-specific sources (fires when user types in non-English)
       const langSources = langSpecificSources(q, qEn, queryLang, searchType);
       if (langSources.length) {
-        log(`Adding ${langSources.length} ${queryLang.toUpperCase()} language-specific source(s)`, 'info');
+        log(`Adding ${langSources.length} ${queryLang.toUpperCase()} query-language source(s)`, 'info');
         scraperURLs.push(...langSources);
+      }
+
+      // 2 ── Entity-origin sources (fires when entity name pattern reveals a country)
+      //       e.g. "Mowi ASA" → Norwegian sources even though query is in English
+      if (entityOrigin && entityOrigin !== queryLang) {
+        const originQ = qOriginLang !== q ? qOriginLang : qEn; // use translated name if available
+        const originSources = langSpecificSources(originQ, qEn, entityOrigin, searchType);
+        if (originSources.length) {
+          log(`Adding ${originSources.length} ${entityOrigin.toUpperCase()} entity-origin source(s)`, 'info');
+          scraperURLs.push(...originSources);
+        }
+        // Also add a translated-name search on the origin language's main engine
+        if (qOriginLang !== q) {
+          const originTerms = encodeURIComponent(langIndustryTerms(entityOrigin, searchType));
+          const encOrigin   = encodeURIComponent(qOriginLang);
+          scraperURLs.push(
+            { id:`${entityOrigin.toUpperCase()}-NativeName`, url:`https://www.bing.com/search?q=${encOrigin}+${originTerms}&setlang=${entityOrigin}`, _lang:entityOrigin, _fallback:true },
+          );
+        }
+      }
+
+      // 3 ── Always-on global coverage: China + Norway + Spanish America
+      //       These run for EVERY search regardless of query language or entity origin.
+      //       The world's top aquaculture nations must always be checked.
+      const alwaysOnSources = getAlwaysOnLanguageSources(q, qEn, searchType);
+      // Avoid duplicating sources already added by query-language or entity-origin paths
+      const existingIds = new Set(scraperURLs.map(s => s.id));
+      const newAlways   = alwaysOnSources.filter(s => !existingIds.has(s.id));
+      if (newAlways.length) {
+        log(`Adding ${newAlways.length} always-on multilingual source(s) (CN/NO/ES)`, 'info');
+        scraperURLs.push(...newAlways);
       }
 
       // Google (Chinese) — targets .cn domains and Chinese-language results
@@ -3587,11 +3712,16 @@ async function runBot() {
       'Web-Discovery','DDG-Search','Google-Search','Broad-Search','Intl-Search',
       'Google-CN','Baidu-Search',                      // Chinese search engines
       'Bing-EN-Xlat',                                  // English cross-search for non-EN queries
-      'Shuichan-Farm','Shuichan-Mill',                 // Chinese aquaculture portals
-      'FishFirst-Farm','FishFirst-Mill','MARA-Fisheries',
-      'WeChat-Bing','WeChat-Sogou-Articles','WeChat-Sogou-Accounts','WeChat-Industry', // WeChat
+      // Always-on multilingual (fire for every search)
+      'Global-CN-Always','Baidu-Always','WeChat-Always',
+      'Google-NO-Always','Google-ES-Always','Google-CL-Always',
+      // Chinese portals
+      'Shuichan-Farm','Shuichan-Mill','FishFirst-Farm','FishFirst-Mill','MARA-Fisheries',
+      'WeChat-Bing','WeChat-Sogou-Articles','WeChat-Sogou-Accounts','WeChat-Industry',
       // Language-specific search engines
       'Bing-NO','Bing-ES','Bing-PT','Bing-FR','Bing-DE','Bing-JA','Bing-KO','Bing-AR','Bing-RU',
+      // Entity-origin native-name searches
+      'NO-NativeName','ZH-NativeName','ES-NativeName','JA-NativeName','KO-NativeName','RU-NativeName',
     ];
 
     // ── Scrape helper: fetch one source, translate if needed, extract fields ──
@@ -5588,6 +5718,19 @@ async function bulkScrapeItem(q, searchType, yearTo, catFilter, signal) {
   const langSrcs = langSpecificSources(q, qEn, queryLang, searchType);
   scraperURLs.push(...langSrcs);
 
+  // Entity-origin detection — "Mowi ASA" → Norwegian even though query is English
+  const entityOriginBulk = detectEntityOrigin(q);
+  if (entityOriginBulk && entityOriginBulk !== queryLang) {
+    const originSrcsBulk = langSpecificSources(q, qEn, entityOriginBulk, searchType);
+    const existingIdsBulk = new Set(scraperURLs.map(s => s.id));
+    scraperURLs.push(...originSrcsBulk.filter(s => !existingIdsBulk.has(s.id)));
+  }
+
+  // Always-on: Chinese + Norwegian + Spanish — fire for every bulk search
+  const alwaysBulk = getAlwaysOnLanguageSources(q, qEn, searchType);
+  const existAlways = new Set(scraperURLs.map(s => s.id));
+  scraperURLs.push(...alwaysBulk.filter(s => !existAlways.has(s.id)));
+
   // Direct vessel registries when we have an IMO
   if (isVessel) {
     if (imo) {
@@ -5607,13 +5750,18 @@ async function bulkScrapeItem(q, searchType, yearTo, catFilter, signal) {
   const DISCOVERY_BULK = [
     'Web-Discovery','DDG-Search','Google-Search','Google-CN','WeChat-Sogou','Intl-Search',
     'Bing-EN-Xlat',
-    // Language-specific search engines — all follow their links
+    // Always-on multilingual
+    'Global-CN-Always','Baidu-Always','WeChat-Always',
+    'Google-NO-Always','Google-ES-Always','Google-CL-Always',
+    // Language-specific search engines
     'Google-NO','Bing-NO','Google-ES','Bing-ES','Google-CL','Google-BR','Bing-PT',
     'Google-FR','Bing-FR','Google-DE','Bing-DE',
     'Yahoo-JP','Google-JP','Bing-JA',
     'Naver-KO','Daum-KO','Google-KR',
     'Yandex-RU','Google-RU','Bing-RU',
     'Google-AR','Bing-AR',
+    // Entity-origin native searches
+    'NO-NativeName','ZH-NativeName','ES-NativeName','JA-NativeName','KO-NativeName','RU-NativeName',
   ];
   const allImgs = scrapeResults.flatMap(r => r.imgs || []);
 
