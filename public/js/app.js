@@ -1318,13 +1318,196 @@ function parseHTML(html, sourceURL) {
 function detectLang(doc, text) {
   const htmlLang = doc?.documentElement?.getAttribute('lang') || '';
   if (htmlLang) return htmlLang.slice(0, 2).toLowerCase();
-  // Script-based heuristics for undeclared languages
+  if (!text) return 'en';
+  // Non-Latin scripts — unambiguous
   if (/[一-鿿]/.test(text)) return 'zh';
   if (/[぀-ゟ゠-ヿ]/.test(text)) return 'ja';
   if (/[가-힯]/.test(text)) return 'ko';
-  if (/[؀-ۿ]/.test(text)) return 'ar';
+  if (/[؀-ۿ؀-ۿ]/.test(text)) return 'ar';
   if (/[Ѐ-ӿ]/.test(text)) return 'ru';
+  if (/[ก-๛]/.test(text)) return 'th';
+  if (/[Ā-ģ]/.test(text) && /māja|zivju|laima/i.test(text)) return 'lv'; // Latvian
+  // Latin-script heuristics via distinctive diacritics
+  if (/[æøÆØ]/.test(text)) return 'no'; // Norwegian (also Danish, but close enough)
+  if (/[äÄöÖüÜß]/.test(text) && !/[æøÆØñÑ]/.test(text)) return 'de';
+  if (/[ñÑ]/.test(text) || (/[áéíóúÁÉÍÓÚ]/.test(text) && /\b(de|del|la|el|los|las|en|por|con|para)\b/.test(text))) return 'es';
+  if (/[àâêîôûùçÀÂÊÎÔÛÙÇ]/.test(text)) return 'fr';
+  if (/[ãõÃÕ]/.test(text)) return 'pt';
+  if (/[ăîâȘȚ]/.test(text)) return 'ro';
+  if (/[åÅ]/.test(text) && !/[æøÆØ]/.test(text)) return 'sv'; // Swedish (å without æø)
+  if (/[äÄöÖ]/.test(text) && /\b(och|att|det|som|är)\b/.test(text)) return 'sv';
   return 'en';
+}
+
+/**
+ * Detect the language of a user's search query.
+ * More aggressive than detectLang — queries are short so we check
+ * character composition rather than relying on word frequency.
+ */
+function detectQueryLang(q) {
+  if (!q) return 'en';
+  // Non-Latin scripts first
+  if (/[一-鿿]/.test(q)) return 'zh';
+  if (/[぀-ゟ゠-ヿ]/.test(q)) return 'ja';
+  if (/[가-힯]/.test(q)) return 'ko';
+  if (/[؀-ۿ؀-ۿ]/.test(q)) return 'ar';
+  if (/[Ѐ-ӿ]/.test(q)) return 'ru';
+  if (/[ก-๛]/.test(q)) return 'th';
+  // Latin diacritics
+  if (/[æøÆØÅå]/.test(q)) return /[åÅ]/.test(q) && !/[æøÆØ]/.test(q) ? 'sv' : 'no';
+  if (/[ñÑ]/.test(q)) return 'es';
+  if (/[àâêîôûùçÀÂÊÎÔÛÙÇ]/.test(q)) return 'fr';
+  if (/[ãõÃÕ]/.test(q)) return 'pt';
+  if (/[äÄöÖüÜß]/.test(q)) return 'de';
+  if (/[ăîâȘȚ]/.test(q)) return 'ro';
+  return 'en';
+}
+
+/**
+ * Translate a short query string from one language to another.
+ * Used to cross-search: Norwegian query on English databases and vice-versa.
+ * Returns the original query if translation fails.
+ */
+async function translateQuery(q, fromLang, toLang, signal) {
+  if (fromLang === toLang || !q.trim()) return q;
+  const enc = encodeURIComponent(q);
+  // Google Translate gtx — reliable for short queries
+  try {
+    const r = await fetch(
+      `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${fromLang}&tl=${toLang}&dt=t&q=${enc}`,
+      { signal: timedSignal(signal, 6000) }
+    );
+    const d = await r.json();
+    const t = (d?.[0] || []).map(s => s?.[0] || '').join('').trim();
+    if (t && t !== q) return t;
+  } catch {}
+  // MyMemory fallback
+  try {
+    const r = await fetch(
+      `https://api.mymemory.translated.net/get?q=${enc}&langpair=${fromLang}|${toLang}`,
+      { signal: timedSignal(signal, 6000) }
+    );
+    const d = await r.json();
+    const t = d.responseData?.translatedText?.trim();
+    if (t && t !== q) return t;
+  } catch {}
+  return q; // return original on failure
+}
+
+/**
+ * Industry-specific search terms for each language / facility type.
+ * These are appended to search queries so language-specific results surface.
+ */
+function langIndustryTerms(lang, searchType) {
+  const TERMS = {
+    no: { farm: 'fiskeoppdrett akvakultur laks oppdrettsanlegg',  vessel: 'fiskefartøy skipsnavn IMO fiskeri', mill: 'fiskemellfabrikk fiskeolje fiskemel' },
+    sv: { farm: 'fiskodling vattenbruk lax odlingsanläggning',    vessel: 'fiskefartyg fartygsnamn IMO',        mill: 'fiskemjölsfabrik fiskolja fiskemjöl' },
+    da: { farm: 'fiskeopdræt akvakultur laks opdrætsanlæg',       vessel: 'fiskefartøj skibsnavn IMO',         mill: 'fiskemelsfabrik fiskeolie fiskemel' },
+    fi: { farm: 'kalankasvatus vesiviljely lohi kalanviljelylaitos', vessel: 'kalastusalus alusnimi IMO',       mill: 'kalanjauhotehdas kalaöljy kalanjauhot' },
+    de: { farm: 'Aquakultur Fischzucht Lachsfarm Fischfarm',      vessel: 'Fischereifahrzeug Schiffsname IMO', mill: 'Fischmehlwerk Fischöl Fischmehl' },
+    fr: { farm: 'aquaculture pisciculture ferme piscicole',        vessel: 'navire de pêche nom du navire IMO', mill: 'usine de farine de poisson huile de poisson' },
+    es: { farm: 'acuicultura piscicultura granja acuícola',        vessel: 'buque pesquero nombre del barco IMO', mill: 'fábrica de harina de pescado aceite de pescado' },
+    pt: { farm: 'aquicultura piscicultura fazenda aquícola',       vessel: 'embarcação pesqueira nome IMO',     mill: 'fábrica de farinha de peixe óleo de peixe' },
+    zh: { farm: '水产养殖 养殖场 养殖品种 产量',                   vessel: '船舶 船名 IMO 渔船',                mill: '鱼粉厂 鱼油 水产品加工' },
+    ja: { farm: '養殖 水産養殖 養殖場 水産物',                    vessel: '漁船 船名 IMO 船籍',               mill: '魚粉工場 魚粉 魚油' },
+    ko: { farm: '양식 수산양식 양식장 수산물',                    vessel: '어선 선명 IMO 선적',               mill: '어분공장 어분 어유' },
+    ar: { farm: 'تربية الأحياء المائية مزرعة سمك أحواض',         vessel: 'سفينة صيد اسم السفينة IMO',        mill: 'مصنع طحين السمك زيت السمك' },
+    ru: { farm: 'аквакультура рыбоводство рыбная ферма',          vessel: 'рыболовное судно название IMO',     mill: 'рыбомучной завод рыбная мука рыбий жир' },
+  };
+  const set = TERMS[lang];
+  if (!set) return '';
+  const type = searchType === 'vessel' ? 'vessel' : searchType === 'mill' ? 'mill' : 'farm';
+  return set[type] || '';
+}
+
+/**
+ * Language-specific official registries and databases per country.
+ * Returns an array of {id, url, _lang} source objects.
+ */
+function langSpecificSources(q, qEn, lang, searchType) {
+  const enc    = encodeURIComponent(q);
+  const encEn  = encodeURIComponent(qEn);
+  const isV = searchType === 'vessel';
+  const isM = searchType === 'mill';
+  const sources = [];
+
+  if (lang === 'no' || lang === 'sv' || lang === 'da' || lang === 'fi') {
+    // Nordic aquaculture registries
+    sources.push(
+      { id:'Fiskeridir',  url:`https://www.fiskeridir.no/Akvakultur/Registre-og-skjema/Akvakulturregisteret?s=${enc}`, _lang:'no' },
+      { id:'BarentsWatch',url:`https://www.barentswatch.no/bw/map?lat=68&lon=15&zoom=5`, _lang:'no' },
+    );
+    if (isV) sources.push(
+      { id:'Sjøfart',     url:`https://www.sjofartsdir.no/sjofart/fartoy/fartoyregisteret/?sok=${enc}`, _lang:'no' },
+      { id:'Kystverket',  url:`https://kystverket.no/navigasjon-og-overvaking/ais/aisinformasjon/?q=${encEn}`, _lang:'no' },
+    );
+    // Norwegian search
+    sources.push(
+      { id:'Bing-NO', url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms(lang, searchType))}&setlang=nb-NO&cc=NO`, _lang:'no' },
+    );
+  }
+
+  if (lang === 'es') {
+    sources.push(
+      { id:'Subpesca-CL', url:`https://www.subpesca.cl/buscador/606/w3-propertyvalue-${enc}.html`, _lang:'es' },
+      { id:'Sernapesca',  url:`https://www.sernapesca.cl/informes-y-estadisticas/consulta/${enc}`, _lang:'es' },
+      { id:'Produce-PE',  url:`https://www.produce.gob.pe/index.php/busqueda?q=${enc}`, _lang:'es' },
+      { id:'Bing-ES',     url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('es', searchType))}&setlang=es-ES`, _lang:'es' },
+    );
+  }
+
+  if (lang === 'pt') {
+    sources.push(
+      { id:'MAPA-BR',   url:`https://www.gov.br/agricultura/pt-br/busca?SearchableText=${enc}`, _lang:'pt' },
+      { id:'Bing-PT',   url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('pt', searchType))}&setlang=pt-PT`, _lang:'pt' },
+    );
+  }
+
+  if (lang === 'ja') {
+    sources.push(
+      { id:'JFA-Japan',  url:`https://www.jfa.maff.go.jp/j/saibai/search/?keyword=${enc}`, _lang:'ja', _cn:true },
+      { id:'Bing-JA',    url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('ja', searchType))}&setlang=ja-JP&cc=JP`, _lang:'ja', _cn:true },
+    );
+    if (isV) sources.push(
+      { id:'JG-Registry', url:`https://www.jg.go.jp/vessel/search?name=${enc}`, _lang:'ja', _cn:true },
+    );
+  }
+
+  if (lang === 'ko') {
+    sources.push(
+      { id:'FIPS-KR',    url:`https://www.fips.go.kr/search/search.do?searchWord=${enc}`, _lang:'ko', _cn:true },
+      { id:'Bing-KO',    url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('ko', searchType))}&setlang=ko-KR&cc=KR`, _lang:'ko', _cn:true },
+    );
+  }
+
+  if (lang === 'ar') {
+    sources.push(
+      { id:'Bing-AR', url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('ar', searchType))}&setlang=ar-SA&cc=SA`, _lang:'ar', _cn:true },
+    );
+  }
+
+  if (lang === 'fr') {
+    sources.push(
+      { id:'FranceAgriMer', url:`https://www.franceagrimer.fr/recherche?text=${enc}`, _lang:'fr' },
+      { id:'Bing-FR',       url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('fr', searchType))}&setlang=fr-FR`, _lang:'fr' },
+    );
+  }
+
+  if (lang === 'de') {
+    sources.push(
+      { id:'BLE-DE',  url:`https://www.ble.de/DE/Fischerei/Fischerei_node.html;jsessionid=0?q=${enc}`, _lang:'de' },
+      { id:'Bing-DE', url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('de', searchType))}&setlang=de-DE`, _lang:'de' },
+    );
+  }
+
+  if (lang === 'ru') {
+    sources.push(
+      { id:'Rosrybolovstvo', url:`https://fish.gov.ru/search/?q=${enc}`, _lang:'ru', _cn:true },
+      { id:'Bing-RU',        url:`https://www.bing.com/search?q=${enc}+${encodeURIComponent(langIndustryTerms('ru', searchType))}&setlang=ru-RU&cc=RU`, _lang:'ru', _cn:true },
+    );
+  }
+
+  return sources;
 }
 
 /** Combine caller's abort signal with a per-call timeout */
@@ -2167,9 +2350,15 @@ const SOURCE_RANK = [
   'Broad-Search','Intl-Search','Baidu-Search',                          // lowest — broad fallbacks
   'Web-Discovery','DDG-Search','Google-Search','Google-CN',             // web search result pages
   'Wikipedia','MMSI-Decode','AIS-Registry',                             // encyclopedic / AIS
+  'Bing-EN-Xlat',                                                      // cross-search (same trust as Web-Discovery)
+  'Bing-NO','Bing-ES','Bing-PT','Bing-FR','Bing-DE','Bing-JA','Bing-KO','Bing-AR','Bing-RU', // lang-specific Bing
   'WeChat-Bing','WeChat-Sogou-Articles','WeChat-Sogou-Accounts','WeChat-Industry', // WeChat search
   'mp.weixin.qq.com',                                                  // WeChat article pages (direct)
   'Shuichan-Farm','Shuichan-Mill','FishFirst-Farm','FishFirst-Mill',    // Chinese trade portals
+  'Fiskeridir','BarentsWatch','Sjøfart','Kystverket',                  // Nordic official registries
+  'Subpesca-CL','Sernapesca','Produce-PE',                             // Latin American registries
+  'JFA-Japan','JG-Registry','FIPS-KR',                                 // Asian registries
+  'FranceAgriMer','BLE-DE','Rosrybolovstvo','MAPA-BR',                 // EU / Russian / Brazil
   'SeafoodSource','EUMOFA','MarineIngredients','GlobalSalmonIndex','Undercurrent', // trade & market databases
   'FIS','IFFO','BAP','GlobalGAP','MARA-Fisheries',                      // sector-specific registries
   'FAO','ASC',                                                          // UN / certification bodies
@@ -2735,7 +2924,19 @@ async function runBot() {
   }
 
   try {
-    log(`Query: "${q}" — type: ${searchType}`, 'info');
+    // ── Query language detection + cross-language translation ──────────────
+    const queryLang = detectQueryLang(q);
+    let qEn = q; // English version — used for English-language search engines
+    if (queryLang !== 'en') {
+      log(`Query language: ${queryLang} — generating English cross-search…`, 'info');
+      setStatus('Translating query…');
+      try { qEn = await translateQuery(q, queryLang, 'en', signal); } catch {}
+      if (qEn !== q) log(`Cross-search: "${qEn}"`, 'ok');
+    }
+    // Language-specific industry supplement terms (appended to search queries)
+    const langTerms = langIndustryTerms(queryLang, searchType);
+
+    log(`Query: "${q}" — type: ${searchType}${queryLang !== 'en' ? ` [${queryLang}]` : ''}`, 'info');
     setProgress(20); setStatus('Building source list…');
 
     /* Step 2: Scrape farm / mill details */
@@ -2827,23 +3028,42 @@ async function runBot() {
         farmAPIResults = await queryFarmAPIs(q, signal, yearTo, searchType).catch(() => []);
       }
 
+      // Use qEn (English translation) for English search engines when query is non-English
+      const qEnPhrase = (qEn !== q && (words.length >= 3 || qEn.length >= 16)) ? `"${qEn}"` : qEn;
+
       scraperURLs.push({ id:'Web-Discovery', url:`https://www.bing.com/search?q=${encodeURIComponent(bingQ)}` });
 
-      // DuckDuckGo — independent index, fewer ad-blocks than Bing; richer field keywords
+      // If query is non-English, also search with English translation on Bing
+      if (qEn !== q) {
+        const bingEnQ = isVessel
+          ? `${qEnPhrase}${catKW} vessel ship IMO registry flag`
+          : isMill ? `${qEnPhrase}${catKW} fishmeal processing plant`
+                   : `${qEnPhrase}${catKW} aquaculture fish farm certified`;
+        scraperURLs.push({ id:'Bing-EN-Xlat', url:`https://www.bing.com/search?q=${encodeURIComponent(bingEnQ)}` });
+      }
+
+      // DuckDuckGo — uses English translation query for best results
       const ddgQ = isVessel
-        ? `${qPhrase}${catKW} vessel ship IMO MMSI flag registry gross tonnage year built`
+        ? `${qEnPhrase}${catKW} vessel ship IMO MMSI flag registry gross tonnage year built`
         : isMill
-          ? `${qPhrase}${catKW} fishmeal "fish oil" processing plant IFFO certified capacity input species`
-          : `${qPhrase}${catKW} aquaculture "fish farm" ASC BAP certified species production capacity`;
+          ? `${qEnPhrase}${catKW} fishmeal "fish oil" processing plant IFFO certified capacity input species`
+          : `${qEnPhrase}${catKW} aquaculture "fish farm" ASC BAP certified species production capacity`;
       scraperURLs.push({ id:'DDG-Search', url:`https://html.duckduckgo.com/html/?q=${encodeURIComponent(ddgQ)}` });
 
-      // Google (English) — wider crawl, especially for non-English pages
+      // Google (English) — uses English translation + language-specific industry terms
       const googleQ = isVessel
-        ? `${qPhrase}${catKW} vessel ship IMO flag "call sign" "gross tonnage" "year built"`
+        ? `${qEnPhrase}${catKW} vessel ship IMO flag "call sign" "gross tonnage" "year built" ${langTerms}`
         : isMill
-          ? `${qPhrase}${catKW} fishmeal "fish oil" mill capacity "input species" certifications`
-          : `${qPhrase}${catKW} fish farm aquaculture species certified production capacity operator`;
-      scraperURLs.push({ id:'Google-Search', url:`https://www.google.com/search?q=${encodeURIComponent(googleQ)}&num=20&hl=en&gl=us` });
+          ? `${qEnPhrase}${catKW} fishmeal "fish oil" mill capacity "input species" certifications ${langTerms}`
+          : `${qEnPhrase}${catKW} fish farm aquaculture species certified production capacity operator ${langTerms}`;
+      scraperURLs.push({ id:'Google-Search', url:`https://www.google.com/search?q=${encodeURIComponent(googleQ.trim())}&num=20&hl=en&gl=us` });
+
+      // Language-specific official registries (Norwegian, Spanish, Japanese, etc.)
+      const langSources = langSpecificSources(q, qEn, queryLang, searchType);
+      if (langSources.length) {
+        log(`Adding ${langSources.length} ${queryLang.toUpperCase()} language-specific source(s)`, 'info');
+        scraperURLs.push(...langSources);
+      }
 
       // Google (Chinese) — targets .cn domains and Chinese-language results
       const googleCNQ = isVessel
@@ -2893,18 +3113,20 @@ async function runBot() {
         { id:'WeChat-Industry', url:`https://www.bing.com/search?q=${encodeURIComponent(wxQ + ' site:mp.weixin.qq.com')}&setlang=zh-CN`, _cn:true, _wechat:true, _fallback:true },
       );
 
-      // Broad fallback — no date, no exact phrase
+      // Broad fallback — no date, no exact phrase; uses English translation if query is non-English
       const fallbackQ = isVessel
-        ? `${q} vessel ship registry`
-        : isMill ? `${q} fishmeal fish processing` : `${q} fish farm aquaculture`;
+        ? `${qEn} vessel ship registry`
+        : isMill ? `${qEn} fishmeal fish processing` : `${qEn} fish farm aquaculture`;
       scraperURLs.push({ id:'Broad-Search', url:`https://www.bing.com/search?q=${encodeURIComponent(fallbackQ)}`, _fallback:true });
 
-      // International fallback — search without English keywords to surface foreign-language sites
-      const intlQ = isVessel
-        ? `${q} nave barco buque vessel schiff navire 船 漁船 مركب`
+      // International fallback — original query with multilingual industry terms
+      // This surfaces foreign-language pages that English-only queries miss
+      const intlTerms = isVessel
+        ? `nave barco buque vessel schiff navire 船 漁船 مركب ${langTerms}`
         : isMill
-          ? `${q} harina pescado fischmehl farine poisson 鱼粉 鱼油厂`
-          : `${q} acuicultura aquaculture aquacultura élevage poisson 水产养殖 养殖场`;
+          ? `harina pescado fischmehl farine poisson 鱼粉 鱼油厂 ${langTerms}`
+          : `acuicultura aquaculture aquacultura élevage poisson 水产养殖 养殖场 ${langTerms}`;
+      const intlQ = `${q} ${intlTerms.trim()}`;
       scraperURLs.push({ id:'Intl-Search', url:`https://www.bing.com/search?q=${encodeURIComponent(intlQ)}&setlang=en`, _fallback:true });
     }
 
@@ -2998,9 +3220,12 @@ async function runBot() {
     const DISCOVERY_IDS = [
       'Web-Discovery','DDG-Search','Google-Search','Broad-Search','Intl-Search',
       'Google-CN','Baidu-Search',                      // Chinese search engines
+      'Bing-EN-Xlat',                                  // English cross-search for non-EN queries
       'Shuichan-Farm','Shuichan-Mill',                 // Chinese aquaculture portals
       'FishFirst-Farm','FishFirst-Mill','MARA-Fisheries',
       'WeChat-Bing','WeChat-Sogou-Articles','WeChat-Sogou-Accounts','WeChat-Industry', // WeChat
+      // Language-specific search engines
+      'Bing-NO','Bing-ES','Bing-PT','Bing-FR','Bing-DE','Bing-JA','Bing-KO','Bing-AR','Bing-RU',
     ];
 
     // ── Scrape helper: fetch one source, translate if needed, extract fields ──
@@ -3015,7 +3240,7 @@ async function runBot() {
         tickSource(s.id);
         log(`→ ${s.id}…`, 'info');
         // Chinese government/portal sites can be slow — give them extra time
-        const timeout = s._cn ? 28000 : 22000;
+        const timeout = (s._cn || s._lang) ? 28000 : 22000;
         const html = await fetchViaProxy(s.url, timedSignal(scrapeSignal, timeout));
         if (scrapeSignal.aborted) return;
 
