@@ -1288,16 +1288,111 @@ function isPaywalled(html) {
 }
 
 /**
- * Attempt to retrieve a paywalled or blocked URL via public archive services.
- * Tries in order: Wayback Machine → archive.ph → 12ft.io → Google Cache.
- * Returns the first HTML string that is not itself paywalled, or null on total failure.
+ * isHardBlocked — detects datacenter/VPN IP blocks distinct from paywalls or CAPTCHAs.
+ * These pages have very thin content and explicit block messages.
+ */
+function isHardBlocked(html) {
+  if (!html) return true;
+  if (html.length < 200) return true;
+  const lc = html.toLowerCase();
+  return [
+    'ip has been blocked','your ip address','ip address blocked',
+    'access from your ip','access from your location',
+    'country is not supported','region is not available',
+    'vpn or proxy','using a vpn','proxy detected',
+    'datacenter ip','hosting provider','cloud provider detected',
+    'suspicious activity','unusual traffic',
+  ].some(s => lc.includes(s));
+}
+
+/**
+ * tryGoogleTranslateBypass — routes the request through Google's translation
+ * infrastructure. Since the fetch comes from Google's own servers, it bypasses
+ * most IP-based blocks including datacenter/VPN detection.
+ *
+ * Google Translate renders the full page and returns the content translated to English.
+ * Works for any publicly accessible URL regardless of whether the origin blocks Vercel.
+ */
+async function tryGoogleTranslateBypass(url, signal) {
+  try {
+    const gtUrl = `https://translate.google.com/translate?sl=auto&tl=en&u=${encodeURIComponent(url)}`;
+    log('Trying Google Translate bypass…', 'info');
+    const html = await fetchViaProxy(gtUrl, timedSignal(signal, 20000));
+    if (!html || html.length < 300) return null;
+    // Google Translate wraps content — extract the inner page div
+    const doc = parseHTML(html, url);
+    // Remove the GT toolbar/header which pollutes field extraction
+    doc.querySelectorAll('#gt-nvframe,#gt-appbar,.goog-te-banner-frame,.skiptranslate').forEach(e => e.remove());
+    const text = doc.body?.innerText?.slice(0, 15000) || '';
+    if (text.length < 100 || isHardBlocked(text)) return null;
+    log('✓ Google Translate bypass — content retrieved', 'ok');
+    return html;
+  } catch(e) {
+    if (e.name === 'AbortError') throw e;
+    return null;
+  }
+}
+
+/**
+ * extractFromSearchSnippets — when the target page is completely blocked,
+ * extract field data directly from the search engine result snippets.
+ * Bing and Google include 200-500 char excerpts that often contain IMO, flag,
+ * capacity, species, and other key fields.
+ *
+ * @param {string} query    - Entity name to search for
+ * @param {string} searchType - 'vessel' | 'farm' | 'mill'
+ * @param {AbortSignal} signal
+ * @returns {{ fields, text } | null}
+ */
+async function extractFromSearchSnippets(query, searchType, signal) {
+  const isV = searchType === 'vessel';
+  const isM = searchType === 'mill';
+  const q = `"${query}" ${isV ? 'vessel IMO flag tonnage' : isM ? 'fishmeal processing capacity' : 'aquaculture farm species capacity'}`;
+  const engines = [
+    `https://www.bing.com/search?q=${encodeURIComponent(q)}&count=20`,
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
+  ];
+  for (const url of engines) {
+    try {
+      const html = await fetchViaProxy(url, timedSignal(signal, 15000));
+      if (!html) continue;
+      const doc  = parseHTML(html, url);
+      // Extract all search result snippets — these contain partial but real content
+      const snippetEls = [
+        ...doc.querySelectorAll('.b_caption p, .b_algoSlug, .result__snippet, .result__body, .snippet'),
+      ];
+      const snippetText = snippetEls.map(el => el.textContent).join('\n');
+      if (snippetText.length < 50) continue;
+      const fields = filterFieldsByType(extractFields(doc, snippetText), searchType);
+      const fc = Object.keys(fields).filter(k => !k.startsWith('_')).length;
+      if (fc >= 1) {
+        log(`✓ Search snippets: ${fc} field(s) extracted (page was blocked)`, 'ok');
+        return { fields, text: snippetText };
+      }
+    } catch(e) { if (e.name === 'AbortError') throw e; }
+  }
+  return null;
+}
+
+/**
+ * Attempt to retrieve a blocked or paywalled URL via public bypass services.
+ * Cascade order optimised for IP-block bypass first, then paywall bypass:
+ *   1. Google Translate (routes through Google's IPs — bypasses datacenter blocks)
+ *   2. Wayback Machine (Internet Archive)
+ *   3. archive.ph / archive.today
+ *   4. 12ft.io reader proxy
+ *   5. Outline.com reader
  */
 async function tryArchiveFallback(originalUrl, signal) {
   const enc = encodeURIComponent(originalUrl);
 
-  // 1 ── Wayback Machine (Internet Archive) — most reliable, covers all sites
+  // 1 ── Google Translate bypass — routes through Google's infrastructure
+  //      Best first choice for IP blocks / VPN detection
+  const gtResult = await tryGoogleTranslateBypass(originalUrl, signal);
+  if (gtResult) return gtResult;
+
+  // 2 ── Wayback Machine (Internet Archive)
   try {
-    // First check the CDX API for the most recent available snapshot
     const cdxResp = await fetch(
       `https://archive.org/wayback/available?url=${enc}`,
       { signal: timedSignal(signal, 7000) }
@@ -1308,7 +1403,7 @@ async function tryArchiveFallback(originalUrl, signal) {
       if (archiveUrl && isValidURL(archiveUrl)) {
         log('Trying Wayback Machine…', 'info');
         const html = await fetchViaProxy(archiveUrl, timedSignal(signal, 18000));
-        if (html && !isPaywalled(html) && html.length > 500) {
+        if (html && !isPaywalled(html) && !isHardBlocked(html) && html.length > 500) {
           log('✓ Wayback Machine — content retrieved', 'ok');
           return html;
         }
@@ -1316,37 +1411,37 @@ async function tryArchiveFallback(originalUrl, signal) {
     }
   } catch(e) { if (e.name === 'AbortError') throw e; }
 
-  // 2 ── archive.ph (archive.today) — good for news/industry sites
+  // 3 ── archive.ph / archive.today
   try {
     log('Trying archive.ph…', 'info');
     const html = await fetchViaProxy(`https://archive.ph/newest/${enc}`, timedSignal(signal, 15000));
-    if (html && !isPaywalled(html) && html.length > 500) {
+    if (html && !isPaywalled(html) && !isHardBlocked(html) && html.length > 500) {
       log('✓ archive.ph — content retrieved', 'ok');
       return html;
     }
   } catch(e) { if (e.name === 'AbortError') throw e; }
 
-  // 3 ── 12ft.io — reader-mode proxy, bypasses many soft paywalls
+  // 4 ── 12ft.io reader proxy
   try {
-    log('Trying 12ft.io reader proxy…', 'info');
+    log('Trying 12ft.io…', 'info');
     const html = await fetchViaProxy(`https://12ft.io/proxy?q=${enc}`, timedSignal(signal, 15000));
-    if (html && !isPaywalled(html) && html.length > 500) {
+    if (html && !isPaywalled(html) && !isHardBlocked(html) && html.length > 500) {
       log('✓ 12ft.io — content retrieved', 'ok');
       return html;
     }
   } catch(e) { if (e.name === 'AbortError') throw e; }
 
-  // 4 ── Outline.com — clean reader mode for articles
+  // 5 ── Outline.com
   try {
-    log('Trying Outline reader…', 'info');
+    log('Trying Outline…', 'info');
     const html = await fetchViaProxy(`https://outline.com/${originalUrl}`, timedSignal(signal, 15000));
-    if (html && !isPaywalled(html) && html.length > 500) {
+    if (html && !isPaywalled(html) && !isHardBlocked(html) && html.length > 500) {
       log('✓ Outline — content retrieved', 'ok');
       return html;
     }
   } catch(e) { if (e.name === 'AbortError') throw e; }
 
-  log('All archive fallbacks exhausted', 'warn');
+  log('All bypass fallbacks exhausted', 'warn');
   return null;
 }
 
@@ -1459,6 +1554,15 @@ async function fetchViaProxy(url, signal) {
         if (blocked) {
           wasKicked = true;
           throw new Error('Block page detected');
+        }
+
+        // Detect hard IP/VPN blocks — skip remaining proxies, go straight to bypass
+        if (isHardBlocked(text)) {
+          clearTimeout(timeout);
+          log(`IP block detected at ${new URL(url).hostname} — trying Google Translate bypass…`, 'warn');
+          const gtResult = await tryGoogleTranslateBypass(url, signal);
+          if (gtResult) { reqCacheSet(url, gtResult); return gtResult; }
+          throw new Error('IP blocked — Google Translate bypass also failed');
         }
 
         // Detect soft paywalls — don't retry proxies, try archive services instead
@@ -3842,6 +3946,18 @@ async function runBot() {
       } catch(e) {
         if (e.name === 'AbortError') throw e;
         log(`✗ ${s.id}: ${e.message}`, 'err');
+        // If this was an important high-trust source (Equasis, MarineTraffic, etc.),
+        // fall back to search snippet extraction rather than giving up entirely
+        const isHighTrust = sourceRank(s.id) >= 26; // Equasis/MarineTraffic tier
+        if (isHighTrust) {
+          log(`High-trust source blocked — extracting from search snippets…`, 'warn');
+          try {
+            const snippetData = await extractFromSearchSnippets(q, searchType, scrapeSignal);
+            if (snippetData) {
+              scrapeResults.push({ id:`${s.id}-snippet`, ok:true, url:s.url, fields:snippetData.fields, imgs:[], text:snippetData.text });
+            }
+          } catch {}
+        }
         scrapeResults.push({ id:s.id, ok:false, url:s.url, error:e.message, fields:{}, imgs:[], text:'' });
       }
     }
