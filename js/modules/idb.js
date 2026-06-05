@@ -8,8 +8,9 @@
  *   knowledge — learned entities + domainStats (keyPath: key)
  */
 (function () {
-  const DB_NAME    = 'fish-intel-db';
-  const DB_VERSION = 2;  // v2: records keyPath fixed to 'id'
+  const DB_NAME     = 'website-extractor-db';
+  const DB_NAME_OLD = 'fish-intel-db';       // legacy — migrated on first open
+  const DB_VERSION  = 2;  // v2: records keyPath fixed to 'id'
   let _db = null;
 
   function open() {
@@ -38,16 +39,6 @@
       req.onsuccess = e => { _db = e.target.result; resolve(_db); };
       req.onerror   = ()  => reject(req.error);
     });
-  }
-
-  function tx(store, mode, fn) {
-    return open().then(db => new Promise((resolve, reject) => {
-      const t   = db.transaction(store, mode);
-      const req = fn(t.objectStore(store));
-      t.oncomplete = () => resolve(req ? req.result : undefined);
-      t.onerror    = ()  => reject(t.error);
-      if (req) req.onsuccess = () => {}; // let transaction complete
-    }));
   }
 
   const AppIDB = {
@@ -98,6 +89,18 @@
       }));
     },
 
+    /** Put multiple items into a store in a single transaction. */
+    putAll(store, items) {
+      if (!items.length) return Promise.resolve();
+      return open().then(db => new Promise((resolve, reject) => {
+        const t = db.transaction(store, 'readwrite');
+        const s = t.objectStore(store);
+        items.forEach(item => s.put(item));
+        t.oncomplete = resolve;
+        t.onerror    = () => reject(t.error);
+      }));
+    },
+
     /** Persist all records in one transaction (replaces full set) */
     putAllRecords(records) {
       return open().then(db => new Promise((resolve, reject) => {
@@ -132,6 +135,56 @@
         }
       } catch (e) {
         console.warn('[IDB] Migration warning:', e);
+      }
+    },
+
+    /**
+     * One-time migration from the legacy 'fish-intel-db' database name.
+     * Copies all data from the old DB into the current one, then deletes it.
+     * Safe to call on every startup — exits immediately if the old DB is gone.
+     */
+    async migrateFromOldDB() {
+      try {
+        // Use indexedDB.databases() where available; fall back to optimistic open
+        let oldExists = true;
+        if ('databases' in indexedDB) {
+          const dbs = await indexedDB.databases();
+          oldExists = dbs.some(d => d.name === DB_NAME_OLD);
+        }
+        if (!oldExists) return;
+
+        // Open the old DB (read-only — don't trigger its onupgradeneeded)
+        const oldDb = await new Promise((resolve, reject) => {
+          const req = indexedDB.open(DB_NAME_OLD);
+          req.onsuccess = e => resolve(e.target.result);
+          req.onerror   = () => reject(req.error);
+        });
+
+        const stores  = ['records', 'cache', 'knowledge'];
+        let   migrated = 0;
+
+        for (const store of stores) {
+          if (!oldDb.objectStoreNames.contains(store)) continue;
+          const items = await new Promise((resolve, reject) => {
+            const t   = oldDb.transaction(store, 'readonly');
+            const req = t.objectStore(store).getAll();
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror   = () => reject(req.error);
+          });
+          if (items.length) {
+            await this.putAll(store, items);
+            migrated += items.length;
+          }
+        }
+
+        oldDb.close();
+        indexedDB.deleteDatabase(DB_NAME_OLD);
+
+        if (migrated > 0) {
+          console.info('[IDB] Migrated', migrated, 'items from fish-intel-db → website-extractor-db');
+        }
+      } catch (e) {
+        console.warn('[IDB] Old DB migration warning:', e);
       }
     },
   };

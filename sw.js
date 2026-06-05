@@ -5,7 +5,7 @@
  * Works correctly on any base path (localhost, GitHub Pages /fish-intel/, etc.)
  * by computing BASE dynamically from the SW's own URL.
  */
-const CACHE_VER = 'fish-intel-v19';
+const CACHE_VER = 'website-extractor-v23';
 
 // Derive base path from the SW's location (e.g. /fish-intel/ or /)
 const BASE = self.location.pathname.replace(/\/sw\.js$/, '/');
@@ -20,6 +20,7 @@ const SHELL_URLS = [
   BASE + 'js/modules/router.js',
   BASE + 'js/modules/cache.js',
   BASE + 'js/modules/sqlite.js',
+  BASE + 'js/modules/directus.js',
 ];
 
 // ── Install: pre-cache app shell ──────────────────────────────────────────────

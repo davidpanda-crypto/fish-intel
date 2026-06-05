@@ -1,11 +1,18 @@
 /**
  * /api/directus/[...path] — Directus proxy
- * Forwards any request to Directus with the server-side token.
- * The token in DIRECTUS_TOKEN never reaches the browser.
+ *
+ * Forwards requests to Directus using the server-side DIRECTUS_TOKEN env var.
+ * The token NEVER reaches the browser — clients authenticate with
+ * x-api-secret (NEXT_PUBLIC_API_SECRET) which is safe to bake into the bundle.
+ *
+ * Allowed paths (prevents enumeration of admin endpoints):
+ *   items   — collection CRUD
+ *   files   — file metadata
+ *   assets  — file downloads
  *
  * Examples:
- *   GET  /api/directus/items/fish_entities
- *   POST /api/directus/items/fish_entities
+ *   GET   /api/directus/items/fish_entities
+ *   POST  /api/directus/items/fish_entities
  *   PATCH /api/directus/items/fish_entities/123
  */
 
@@ -15,12 +22,13 @@ import { requireSecret } from '../../../../lib/auth.js';
 const DIRECTUS_URL   = process.env.DIRECTUS_URL?.replace(/\/$/, '');
 const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN;
 
-// Only these top-level Directus paths may be proxied — prevents enumeration
-// of admin endpoints like /users, /roles, /permissions, /settings
+// Only these top-level Directus paths may be proxied
 const ALLOWED_PATHS = ['items', 'files', 'assets'];
 
 async function proxy(request, { params }) {
-  const authErr = requireSecret(request, true);
+  // serverOnly=false: accepts NEXT_PUBLIC_API_SECRET from browser clients.
+  // The Directus token itself is still protected — it never leaves the server.
+  const authErr = requireSecret(request, false);
   if (authErr) return authErr;
 
   if (!DIRECTUS_URL || !DIRECTUS_TOKEN) {

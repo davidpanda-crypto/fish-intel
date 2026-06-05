@@ -17,8 +17,7 @@ export default function FishIntelApp() {
       <Script src="/js/modules/idb.js"      strategy="beforeInteractive" />
       <Script src="/js/modules/router.js"   strategy="beforeInteractive" />
       <Script src="/js/modules/cache.js"    strategy="beforeInteractive" />
-      {/* Directus disabled — uncomment to re-enable sync */}
-      {/* <Script src="/js/modules/directus.js" strategy="beforeInteractive" /> */}
+      <Script src="/js/modules/directus.js" strategy="beforeInteractive" />
       <Script src="/js/modules/sqlite.js"   strategy="beforeInteractive" />
       <Script src="/js/app.js"              strategy="afterInteractive"  />
 
@@ -66,8 +65,8 @@ const APP_BODY = `
   <div class="settings-inner">
     <div class="settings-hdr">
       <div>
-        <div class="settings-title" id="settings-title">AI Settings</div>
-        <div class="settings-sub">Configure your AI provider (Claude or Qwen32B on DGX Spark).</div>
+        <div class="settings-title" id="settings-title">Claude AI Settings</div>
+        <div class="settings-sub">Connect the Anthropic API for AI-powered field extraction, smarter merging, and polished descriptions.</div>
       </div>
       <button class="sp-close" aria-label="Close settings" onclick="closeSettings()">✕</button>
     </div>
@@ -87,26 +86,23 @@ const APP_BODY = `
         <select id="claude-model-sel" class="ctrl-sel" style="width:100%">
           <option value="claude-3-5-haiku-20241022">claude-3-5-haiku — Fast &amp; cheap (Recommended)</option>
           <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet — Balanced accuracy</option>
-          <option value="claude-opus-4-5">claude-opus-4 — Highest accuracy, slower</option>
+          <option value="claude-opus-4-5">claude-opus-4-5 — Highest accuracy, slower</option>
         </select>
       </div>
       <div id="claude-status" class="settings-section"></div>
-      <!-- Directus section disabled — uncomment to re-enable sync
+      <!-- ── Directus ── -->
       <div class="settings-divider"></div>
       <div class="settings-section">
         <label class="settings-label">Directus Integration</label>
-        <p class="settings-hint" style="margin-bottom:10px">Sync saved records to Directus. Set <code>DIRECTUS_URL</code> + <code>DIRECTUS_TOKEN</code> in <code>.env.local</code> to keep the token server-side. Or enter credentials here for direct browser sync.</p>
-        <label class="settings-label" for="directus-url-input" style="margin-top:4px">Instance URL</label>
-        <input type="url" id="directus-url-input" placeholder="https://your-directus.io" autocomplete="off" spellcheck="false" style="width:100%;margin-bottom:8px">
-        <label class="settings-label" for="directus-token-input">Static Token</label>
+        <p class="settings-hint" style="margin-bottom:10px">Sync saved records to your Directus instance. The instance URL and token are configured via <code>DIRECTUS_URL</code> and <code>DIRECTUS_TOKEN</code> server environment variables — only the collection name is stored locally.</p>
+        <label class="settings-label" for="directus-collection-input" style="margin-top:4px">Collection Name</label>
         <div class="settings-key-row">
-          <input type="password" id="directus-token-input" placeholder="Paste token…" autocomplete="off" spellcheck="false">
+          <input type="text" id="directus-collection-input" placeholder="e.g. fish_farms" autocomplete="off" spellcheck="false">
           <button class="btn btn-blue btn-sm" onclick="saveDirectusSettings()">Connect</button>
-          <button class="btn btn-ghost btn-sm" onclick="clearDirectusSettings()">Clear</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearDirectusSettings()">Disconnect</button>
         </div>
         <div id="directus-status" style="margin-top:10px"></div>
       </div>
-      -->
     </div>
   </div>
 </div>
@@ -123,10 +119,10 @@ const APP_BODY = `
       <div class="hs"><span class="hs-v" id="s-ships">0</span><div class="hs-l">Records</div></div>
       <div class="hs"><span class="hs-v" id="s-images">0</span><div class="hs-l">Images</div></div>
     </div>
-    <button class="ai-fab" id="ai-fab" onclick="openSettings()" aria-label="AI settings" title="Configure AI provider">
+    <button class="ai-fab" id="ai-fab" onclick="openSettings()" aria-label="Claude AI settings" title="Configure Claude AI">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07M8.46 8.46a5 5 0 0 0 0 7.07"/></svg>
       AI
-      <span class="claude-dot" id="claude-dot" style="display:none" title="AI active"></span>
+      <span class="claude-dot" id="claude-dot" style="display:none" title="Claude AI active"></span>
     </button>
   </div>
   <div class="site-subhdr">
@@ -157,8 +153,8 @@ const APP_BODY = `
         <div class="ctrl-group">
           <span class="ctrl-lbl">Facility Type</span>
           <select id="search-type" class="ctrl-sel" aria-label="Facility type">
-            <option value="farm" selected>Fish Farm / Aquaculture</option>
-            <option value="mill">Fish Mill / Processing Plant</option>
+            <option value="farm" selected>Farm / Aquaculture</option>
+            <option value="mill">Mill / Processing Plant</option>
             <option value="vessel">Shipping / Fishing Vessel</option>
             <option value="general">General / Auto-detect</option>
           </select>
@@ -186,7 +182,7 @@ const APP_BODY = `
         <button id="search-btn" class="search-go" onclick="runBot()">Search</button>
         <button class="btn-cancel" id="cancel-btn" onclick="cancelSearch()">✕ Cancel</button>
       </div>
-      <p class="search-tip">Try: <button class="search-sug" onclick="fillSearch('Mowi ASA')">"Mowi ASA"</button> · <button class="search-sug" onclick="fillSearch('Leroy Seafood')">"Leroy Seafood"</button> · <button class="search-sug" onclick="fillSearch('Atlantic Dawn')">"Atlantic Dawn"</button> · or a 7-digit IMO number</p>
+      <p class="search-tip">Try: <button class="search-sug" onclick="fillSearch('Mowi ASA')">"Mowi ASA"</button> · <button class="search-sug" onclick="fillSearch('Lerøy Seafood')">"Lerøy Seafood"</button> · <button class="search-sug" onclick="fillSearch('Atlantic Dawn')">"Atlantic Dawn"</button> · or a 7-digit IMO number</p>
     </div>
 
     <!-- SCRAPE URL mode -->
@@ -294,7 +290,7 @@ const APP_BODY = `
     <div class="mode-body" id="mode-bulk" role="tabpanel" aria-labelledby="mbtn-bulk" hidden>
       <div class="upload-hint">One name per line — the bot searches each one and builds a results table you can export to CSV or JSON.</div>
       <textarea id="bulk-in" rows="7" maxlength="10000"
-        placeholder="Mowi ASA&#10;Leroy Seafood&#10;Skretting&#10;Marine Harvest&#10;Cooke Aquaculture"></textarea>
+        placeholder="Mowi ASA&#10;Lerøy Seafood&#10;Skretting&#10;Cermaq&#10;Cooke Aquaculture"></textarea>
       <div class="btn-row">
         <button class="btn btn-blue" onclick="doBulk()">Run Bulk Lookup</button>
         <button class="btn btn-ghost btn-sm" onclick="exportCSV(bulkRes,'bulk.csv')">Export CSV</button>

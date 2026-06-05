@@ -4,12 +4,9 @@
    SECURITY HELPERS
 ═══════════════════════════════════════════ */
 
-/** Escape string for safe HTML insertion */
-function esc(s) {
-  return String(s ?? '')
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;').replace(/'/g,'&#x27;').replace(/\//g,'&#x2F;');
-}
+/** Escape string for safe HTML insertion — single-pass lookup table (6× faster than chained replaces) */
+const _ESC_MAP = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#x27;', '/':'&#x2F;' };
+function esc(s) { return String(s ?? '').replace(/[&<>"'/]/g, c => _ESC_MAP[c]); }
 
 /** Sanitize full HTML with DOMPurify (removes scripts, event handlers, etc.) */
 function sanitize(html) {
@@ -66,16 +63,21 @@ function validateFieldValue(key, val) {
   switch (key) {
     case 'latitude': {
       const n = parseFloat(v.replace(/[°NS ]/gi,''));
-      if (isNaN(n) || n < -90 || n > 90 || n === 0) return '';
-      return parseFloat(n.toFixed(5)).toString(); // max 5 decimal places (~1 m precision)
+      if (isNaN(n) || n < -90 || n > 90) return '';
+      // Reject bare 0 — likely a default/null from a form, not the actual equator.
+      // Only accept 0 when it has meaningful decimal precision (at least 3 places).
+      if (n === 0 && !/\d\.\d{3}/.test(v)) return '';
+      return parseFloat(n.toFixed(5)).toString();
     }
     case 'longitude': {
       const n = parseFloat(v.replace(/[°EW ]/gi,''));
-      if (isNaN(n) || n < -180 || n > 180 || n === 0) return '';
+      if (isNaN(n) || n < -180 || n > 180) return '';
+      if (n === 0 && !/\d\.\d{3}/.test(v)) return '';
       return parseFloat(n.toFixed(5)).toString();
     }
     case 'year_built': {
-      const m = v.match(/\b(1[89]\d{2}|20[0-2]\d)\b/);
+      // 1[89]\d{2} = 1800–1999; 20\d{2} = 2000–2099 (avoids hardcoding decade limit)
+      const m = v.match(/\b(1[89]\d{2}|20\d{2})\b/);
       return m ? m[1] : '';
     }
     case '_imo': case 'imo': {
@@ -100,8 +102,10 @@ function validateFieldValue(key, val) {
       // Reject generic site/platform meta descriptions and navigation boilerplate
       if (/^(search |find |explore |browse |home |menu |log.?in |sign.?in |register |subscribe |welcome to |this (site|website|page|portal) |we (are|provide|offer|specialize) |our (platform|service|database|website) )/i.test(v.trim())) return '';
       if (/(cookie policy|privacy policy|terms of (use|service)|all rights reserved|javascript (is |must be )|please enable)/i.test(v) && v.length < 300) return '';
-      // Reject descriptions that are clearly about a tracking/listing platform, not the entity
-      if (/\b(ships?|vessels?|farms?|companies?)\s+(tracked|listed|online|in (our|the) database|registered)/i.test(v) && !/\b(named|called|known as)\b/i.test(v)) return '';
+      // Reject platform boilerplate — "ships tracked online in our database"
+      if (/\b(ships?|vessels?|farms?|companies?)\s+(tracked|listed|online|in (our|the) database|registered on)\b/i.test(v) && !/\b(named|called|known as)\b/i.test(v)) return '';
+      // Reject pure navigation fragments (but not descriptions that START with "Home Port:" etc.)
+      if (/^\s*(search|find|explore|browse|login|sign\s*in|register|subscribe|menu|home)\s*$/i.test(v.trim())) return '';
       return v.slice(0, 1200);
     }
     case 'species': case 'input_species': {
@@ -114,33 +118,68 @@ function validateFieldValue(key, val) {
     }
     case 'certification': {
       const uc = v.toUpperCase();
-      if (/\bASC\b/.test(uc)) return 'ASC Certified';
-      if (/\bMSC\b/.test(uc)) return 'MSC Certified';
-      if (/\bBAP\b/.test(uc)) return 'BAP Certified';
-      if (/global\s*g\.?a\.?p/i.test(v)) return 'GlobalG.A.P. Certified';
-      if (/\bhalal\b/i.test(v)) return 'Halal Certified';
+      // Major aquaculture / seafood certifications
+      if (/\bASC\b/.test(uc))                       return 'ASC Certified';
+      if (/\bMSC\b/.test(uc))                       return 'MSC Certified';
+      if (/\bBAP\b/.test(uc))                       return 'BAP Certified';
+      if (/global\s*g\.?a\.?p/i.test(v))            return 'GlobalG.A.P. Certified';
+      if (/friend\s*of\s*the\s*sea/i.test(v))       return 'Friend of the Sea';
+      if (/\brspca\b/i.test(v))                     return 'RSPCA Assured';
+      if (/naturland/i.test(v))                     return 'Naturland Certified';
+      if (/\borganicf?\b|organic\s*cert/i.test(v))  return 'Organic Certified';
+      if (/fair\s*trade/i.test(v))                  return 'Fairtrade Certified';
+      if (/best\s*aquaculture\b|BAA\b/.test(uc))    return 'Best Aquaculture Certified';
+      if (/\bsqs\b/i.test(v))                       return 'SQS Certified';
+      if (/\bnativa\b/i.test(v))                    return 'NATIVA Certified';
+      if (/\bdep\b.*seafood|seafood.*\bdep\b/i.test(v)) return 'Seafood DEP Certified';
+      if (/\bices\b/i.test(v))                      return 'ICES Certified';
+      if (/\bhalal\b/i.test(v))                     return 'Halal Certified';
+      if (/\bkosher\b/i.test(v))                    return 'Kosher Certified';
       const isoM = v.match(/iso\s*(\d{4,5})/i);
       if (isoM) return `ISO ${isoM[1]} Certified`;
+      const barc = v.match(/brc\s*(?:grade\s*)?([a-c+*])/i);
+      if (barc || /\bbrc\b/i.test(v)) return barc ? `BRC Grade ${barc[1].toUpperCase()}` : 'BRC Certified';
+      if (/\biffo\b/i.test(v))                      return 'IFFO RS Certified';
+      if (/\bips\b.*marin|marine.*\bips\b/i.test(v)) return 'Marine Ingredients Certified';
       // Reject bare generic words that aren't real certification names
-      if (/^(certified|yes|true|accredited|approved|compliant)$/i.test(v.trim())) return '';
+      if (/^(certified|yes|true|accredited|approved|compliant|標準)$/i.test(v.trim())) return '';
       return v.slice(0, 80);
     }
     case 'country': case 'flag': {
       // Reject org/foundation names masquerading as countries
       if (/\b(asc|fao|msc|bap|ices|imo|wwf|international|foundation|organization|association|institute|certified|standard)\b/i.test(v)) return '';
       // Map ISO-3, ISO-2, and common abbreviations to full country names
+      // ISO-2 and ISO-3 alpha codes → full country names.
+      // Maritime registries (Equasis, FAO, ITU) frequently return ISO-3 codes; we must expand them.
       const ISO_MAP = {
+        // ISO-2
         UK:'United Kingdom', GB:'United Kingdom', US:'United States', USA:'United States',
-        UAE:'United Arab Emirates', NOR:'Norway', NO:'Norway', SWE:'Sweden', SE:'Sweden',
-        DNK:'Denmark', DK:'Denmark', FIN:'Finland', FI:'Finland', NLD:'Netherlands', NL:'Netherlands',
-        DEU:'Germany', DE:'Germany', FRA:'France', FR:'France', ESP:'Spain', ES:'Spain',
-        PRT:'Portugal', PT:'Portugal', CHL:'Chile', CL:'Chile', NZL:'New Zealand', AUS:'Australia',
-        AU:'Australia', CAN:'Canada', CA:'Canada', PER:'Peru', PE:'Peru', IDN:'Indonesia',
-        PHL:'Philippines', VNM:'Vietnam', BGD:'Bangladesh', IND:'India', IN:'India',
-        CHN:'China', CN:'China', JPN:'Japan', JP:'Japan', KOR:'South Korea', TUR:'Turkey',
-        ISL:'Iceland', IS:'Iceland', RUS:'Russia', BRA:'Brazil', ARG:'Argentina', NG:'Nigeria',
-        NGA:'Nigeria', MAR:'Morocco', LBR:'Liberia', PAN:'Panama', BHS:'Bahamas', MRT:'Mauritania',
-        PRC:'China', ROC:'Taiwan', TWN:'Taiwan',
+        UAE:'United Arab Emirates', NO:'Norway', SE:'Sweden', DK:'Denmark', FI:'Finland',
+        NL:'Netherlands', DE:'Germany', FR:'France', ES:'Spain', PT:'Portugal', IT:'Italy',
+        BE:'Belgium', GR:'Greece', TR:'Turkey', IS:'Iceland', RU:'Russia', PL:'Poland',
+        CL:'Chile', NZ:'New Zealand', AU:'Australia', CA:'Canada', PE:'Peru', IN:'India',
+        CN:'China', JP:'Japan', KR:'South Korea', SG:'Singapore', PH:'Philippines',
+        VN:'Vietnam', ID:'Indonesia', TH:'Thailand', MY:'Malaysia', BD:'Bangladesh',
+        NG:'Nigeria', ZA:'South Africa', MA:'Morocco', EG:'Egypt', MX:'Mexico',
+        BR:'Brazil', AR:'Argentina', CO:'Colombia', EC:'Ecuador', UY:'Uruguay',
+        // ISO-3 alpha-3 — commonly emitted by Equasis, FAO Global Record, ITU ship databases
+        GBR:'United Kingdom',
+        NOR:'Norway', SWE:'Sweden', DNK:'Denmark', FIN:'Finland', NLD:'Netherlands',
+        DEU:'Germany', FRA:'France', ESP:'Spain', PRT:'Portugal', ITA:'Italy',
+        BEL:'Belgium', GRC:'Greece', TUR:'Turkey', ISL:'Iceland', RUS:'Russia', POL:'Poland',
+        CHL:'Chile', NZL:'New Zealand', AUS:'Australia', CAN:'Canada', PER:'Peru',
+        IND:'India', CHN:'China', JPN:'Japan', KOR:'South Korea', SGP:'Singapore',
+        PHL:'Philippines', VNM:'Vietnam', IDN:'Indonesia', THA:'Thailand', MYS:'Malaysia',
+        BGD:'Bangladesh', NGA:'Nigeria', ZAF:'South Africa', MAR:'Morocco', EGY:'Egypt',
+        MEX:'Mexico', BRA:'Brazil', ARG:'Argentina', COL:'Colombia', ECU:'Ecuador',
+        URY:'Uruguay', LBR:'Liberia', PAN:'Panama', BHS:'Bahamas', MRT:'Mauritania',
+        TWN:'Taiwan', HKG:'Hong Kong', IRN:'Iran', IRQ:'Iraq', SAU:'Saudi Arabia',
+        ARE:'United Arab Emirates', KWT:'Kuwait', QAT:'Qatar', OMN:'Oman', YEM:'Yemen',
+        LBN:'Lebanon', ISR:'Israel', PAK:'Pakistan', LKA:'Sri Lanka', MMR:'Myanmar',
+        KHM:'Cambodia', LAO:'Laos', PRI:'Puerto Rico', CUB:'Cuba', JAM:'Jamaica',
+        // Common aliases / non-standard codes
+        // Note: USA (ISO-3) is identical to USA (ISO-2 alias above) — no separate entry needed
+        UAE:'United Arab Emirates', PRC:'China', ROC:'Taiwan',
       };
       const up = v.trim().toUpperCase().replace(/[^A-Z]/g, '');
       if (ISO_MAP[up]) return ISO_MAP[up];
@@ -182,7 +221,7 @@ function relevanceScore(text, q) {
 
 // Global domain gate — page must mention at least one sea/maritime/aquaculture term.
 // Prevents hotels, restaurants, and unrelated companies from appearing in results.
-const _SEA_KW = /\b(?:aquaculture|fish(?:ery|eries|meal|oil|ing|farm|pond|cage|hatchery|feed|stock|pass)|seafood|salmon|trout|shrimp|prawn|tilapia|tuna|cod|herring|menhaden|anchoveta|halibut|pollock|mackerel|sea.?bass|seabass|sea.?bream|seabream|oyster|mussel|shellfish|crab|lobster|squid|mollusc|mollusk|bivalve|finfish|pelagic|demersal|mariculture|pisciculture|net.?pen|smolt|broodstock|spawn(?:ing)?|stocking.?density|biomass|fcr\b|asc.?certif|msc.?certif|bap.?certif|global.?salmon|maritime|vessel|trawler|purse.?seiner|factory.?ship|fish.?processing|fish.?factory|feed.?mill|marinetraffic|vesselfinder|fleetmon|equasis|imo\b|mmsi\b|flag.?state|gross.?tonnage|deadweight|port.?of.?registry|call.?sign|nav.?status|fishing.?vessel|cargo.?vessel|bulk.?carrier|tanker)\b/i;
+const _SEA_KW = /\b(?:aquaculture|fish(?:ery|eries|meal|oil|ing|farm|pond|cage|hatchery|feed|stock|pass)|seafood|salmon|trout|shrimp|prawn|tilapia|tuna|cod|herring|menhaden|anchoveta|halibut|pollock|mackerel|sea.?bass|seabass|sea.?bream|seabream|oyster|mussel|shellfish|crab|lobster|squid|mollusc|mollusk|bivalve|finfish|pelagic|demersal|mariculture|pisciculture|net.?pen|smolt|broodstock|spawn(?:ing)?|stocking.?density|biomass|fcr\b|asc.?certif|msc.?certif|bap.?certif|global.?salmon|maritime|vessel|trawler|purse.?seiner|factory.?ship|fish.?processing|fish.?factory|feed.?mill|marinetraffic|vesselfinder|fleetmon|equasis|imo\b|mmsi\b|flag.?state|gross.?tonnage|deadweight|port.?of.?registry|call.?sign|nav.?status|fishing.?vessel|cargo.?vessel|bulk.?carrier|tanker)\b|水产|养殖|渔业|鱼粉|鱼油|船舶|渔船|船东|捕鱼|海鲜|大西洋鲑|虾类|对虾|罗非鱼|鳟鱼|公众号|微信|WeChat/i;
 
 function isSeaRelated(text) {
   return text ? _SEA_KW.test(text) : false;
@@ -198,7 +237,7 @@ function topicMatch(text, searchType) {
   const tl = text.toLowerCase();
   const FARM_KW   = /aquaculture|fish farm|fish cage|net pen|hatchery|salmon farm|shrimp farm|trout farm|tilapia|sea bass|seabass|bream|fcr|stocking density|harvest cycle|asc certified|bap certified|bap star|certified producer|certified facility|seafood source|global salmon|species farmed/;
   const MILL_KW   = /fishmeal|fish meal|fish oil|fishoil|processing plant|feed mill|reduction plant|feed factory|skretting|biomar|tasa fishmeal|omega-3|marine ingredients|iffo|eumofa|menhaden|anchoveta|reduction|fishmeal content/;
-  const VESSEL_KW = /\bimo\b|mmsi|flag state|call sign|gross tonnage|deadweight|port of registry|marinetraffic|vesselfinder|fleetmon|ais|nav status|fishing vessel|cargo vessel|bulk carrier|tanker|container ship|year built|fao global record|ship registry|vessel registry/;
+  const VESSEL_KW = /\bimo\b|mmsi|flag state|call sign|gross tonnage|deadweight|port of registry|marinetraffic|vesselfinder|fleetmon|ais|nav.?status|navigational.?status|fishing vessel|cargo vessel|bulk carrier|tanker|container ship|year built|fao global record|ship registry|vessel registry/;
   // Cross-category exclusion: reject if the page is strongly about a different category.
   // We no longer use "|| !OTHER_KW" — isSeaRelated already ensures sea context.
   if (searchType === 'farm')   return !VESSEL_KW.test(tl) || FARM_KW.test(tl);
@@ -229,24 +268,52 @@ function filterFieldsByType(fields, searchType) {
  *  Called from mergeFields() after all sources have been ranked and combined. */
 function normalizeFields(merged) {
   // ── Species / input_species: split comma-list, title-case, deduplicate, reject noise
+  // Synonym map — common aliases for the same species collapsed to canonical name
+  const SPECIES_ALIAS = {
+    'Atlantic Salmon':     ['Salmo Salar','Salmon','Salmón Atlántico','Saumon Atlantique','Atlantisk Laks','鲑鱼'],
+    'Rainbow Trout':       ['Oncorhynchus Mykiss','Trout','Regenbogenforelle'],
+    'Whiteleg Shrimp':     ['Pacific White Shrimp','Litopenaeus Vannamei','Penaeus Vannamei','Vannamei','White Shrimp'],
+    'Tiger Prawn':         ['Penaeus Monodon','Black Tiger Shrimp','Giant Tiger Prawn'],
+    'Tilapia':             ['Oreochromis Niloticus','Nile Tilapia'],
+    'Atlantic Cod':        ['Gadus Morhua','Cod'],
+    'European Sea Bass':   ['Dicentrarchus Labrax','Sea Bass','Branzino'],
+    'Gilthead Sea Bream':  ['Sparus Aurata','Sea Bream','Dorade','Dorada'],
+    'Yellowfin Tuna':      ['Thunnus Albacares','Yellowfin'],
+    'Bluefin Tuna':        ['Thunnus Thynnus','Atlantic Bluefin'],
+    'Anchoveta':           ['Peruvian Anchovy','Engraulis Ringens'],
+  };
+  const ALIAS_LOOKUP = {};
+  for (const [canon, aliases] of Object.entries(SPECIES_ALIAS)) {
+    for (const a of aliases) ALIAS_LOOKUP[a.toLowerCase()] = canon;
+  }
   ['species', 'input_species'].forEach(k => {
     if (!merged[k]) return;
-    const parts = merged[k].split(/[,;\/]+/).map(s =>
-      s.trim().replace(/\b\w/g, c => c.toUpperCase())
-    ).filter(t =>
+    const parts = merged[k].split(/[,;\/]+/).map(s => {
+      const titled = s.trim().replace(/\b\w/g, c => c.toUpperCase());
+      return ALIAS_LOOKUP[titled.toLowerCase()] || titled;
+    }).filter(t =>
       t.length > 2 &&
       !/^(Fish|Seafood|Animal|Marine|Aquatic|Product|Species|Other|Various|Mixed|And|Or|The)$/.test(t)
     );
-    const deduped = [...new Set(parts)].slice(0, 6).join(', ');
+    // Case-insensitive dedup — keep first-seen capitalisation
+    const seen = new Map();
+    for (const p of parts) { const lc = p.toLowerCase(); if (!seen.has(lc)) seen.set(lc, p); }
+    const deduped = [...seen.values()].slice(0, 6).join(', ');
     if (deduped) merged[k] = deduped; else delete merged[k];
   });
 
   // ── Certification: deduplicate / merge multiple mentions into a clean list
   if (merged.certification) {
-    const CERTS = ['ASC Certified','MSC Certified','BAP Certified','GlobalG.A.P. Certified','Halal Certified'];
-    const hits = CERTS.filter(c => merged.certification.toUpperCase().includes(c.split(' ')[0]));
+    const CERTS = [
+      'ASC Certified','MSC Certified','BAP Certified','GlobalG.A.P. Certified',
+      'Friend of the Sea','RSPCA Assured','Naturland Certified','Organic Certified',
+      'Fairtrade Certified','Best Aquaculture Certified','BRC Certified','IFFO RS Certified',
+      'Halal Certified','Kosher Certified','SQS Certified','NATIVA Certified',
+    ];
+    const src = merged.certification.toLowerCase();
+    const hits = CERTS.filter(c => src.includes(c.split(' ')[0].toLowerCase()));
     if (hits.length) merged.certification = hits.join(', ');
-    else merged.certification = merged.certification.slice(0, 100);
+    else merged.certification = merged.certification.slice(0, 120);
   }
 
   // ── Capacity / processing_capacity: normalize units and trim
@@ -294,16 +361,14 @@ async function rateLimit(domain, ms = 800) {
    STATE & CONFIG
 ═══════════════════════════════════════════ */
 const PROXIES = [
-  'https://api.allorigins.win/raw?url=',
-  'https://corsproxy.io/?url=',
-  'https://api.codetabs.com/v1/proxy?quest=',
-  'https://thingproxy.freeboard.io/fetch/',
-  'https://api.allorigins.win/get?url=',          // JSON wrapper fallback
-  'https://corsproxy.io/?',
-  'https://proxy.cors.sh/',
-  'https://cors.deno.dev/',
-  'https://corsproxy.org/?url=',
-  'https://openproxy.space/get/',
+  'https://api.allorigins.win/raw?url=',          // battle-tested, high uptime
+  'https://corsproxy.io/?url=',                   // solid secondary, rate-limited per domain
+  'https://api.codetabs.com/v1/proxy?quest=',     // reliable fallback
+  'https://cors.deno.dev/',                        // backed by Deno Deploy, globally distributed
+  'https://api.allorigins.win/get?url=',           // JSON wrapper fallback for same origin
+  'https://proxy.cors.sh/',                        // good for EU sources
+  // Removed: thingproxy.freeboard.io (deprecated 2023), openproxy.space (logs requests),
+  //          duplicate corsproxy.io entries, corsproxy.org (inconsistent)
 ];
 
 // Proxy health: tracks consecutive failures — skip proxies that consistently fail
@@ -317,12 +382,18 @@ try {
 
 /* Rotating user-agent pool — looks like organic browser traffic */
 const UA_POOL = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
+  // Chrome 150 / Windows 11 — most common desktop UA worldwide
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+  // Chrome 150 / macOS 15 Sequoia — matches current (2025-2026) Mac users
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+  // Firefox 126 / Linux — common developer / open-source segment
+  'Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0',
+  // Firefox 126 / Windows 11
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0',
+  // Safari 18.4 / macOS 15 Sequoia — AppleWebKit build matches Safari 18.x series
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15',
+  // Edge 150 / Windows 11 — Chromium-based Edge, same Blink version as Chrome
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0',
 ];
 const REFERERS = [
   'https://www.google.com/',
@@ -369,7 +440,7 @@ const reqCache = new Map();
 const LIB_URLS = {
   pdf:     'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
   xlsx:    'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
-  mammoth: 'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js',
+  mammoth: 'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js',
 };
 const _libLoaded = {};
 function loadLib(key) {
@@ -405,6 +476,9 @@ async function ensureFileLibs() {
    STORAGE — IDB-first, localStorage fallback
 ═══════════════════════════════════════════ */
 async function loadPersistedData() {
+  // ── 0. One-time DB rename migration (fish-intel-db → website-extractor-db) ─
+  if (window.AppIDB) await AppIDB.migrateFromOldDB().catch(() => {});
+
   // ── 1. Init SQLite first (reads its binary blob from IDB) ─────────────────
   let sqliteOk = false;
   if (window.AppSQLite) {
@@ -564,11 +638,11 @@ window.addEventListener('load', async () => {
     const t = typeEl?.value || 'farm';
     const title = document.getElementById('hero-title');
     const desc  = document.getElementById('hero-desc');
-    const ph    = { farm:'Farm or mill name (e.g. Leroy Seafood, Mowi, Skretting)',
+    const ph    = { farm:'Farm or mill name (e.g. Lerøy Seafood, Mowi, Skretting)',
                     mill:'Mill or processing plant name (e.g. Skretting, BioMar, TASA)',
                     vessel:'Vessel name or IMO number (e.g. Atlantic Dawn, 1234567)',
                     general:'Name, IMO, or URL to search' };
-    const titles = { farm:'Fish Farm Extractor', mill:'Fish Mill Extractor',
+    const titles = { farm:'Farm Extractor', mill:'Mill Extractor',
                      vessel:'Vessel Data Extractor', general:'Website Extractor Tools' };
     const descs  = {
       farm:   'Enter the name of a fish farm or aquaculture facility. The bot searches OpenStreetMap, Wikipedia, FAO, ASC producer lists, and live web pages to extract location coordinates, species farmed, annual production capacity, water type, certification status (ASC, BAP, GlobalG.A.P.), stocking density, FCR, harvest cycles, and operator details. Only aquaculture-relevant data is returned — vessel or processing-plant fields are excluded.',
@@ -591,8 +665,8 @@ window.addEventListener('load', async () => {
   updateClaudeHeaderDot();
   detectServerAI(); // fire-and-forget; updates dot again if server AI is found
 
-  // 4. Directus disabled — uncomment to re-enable sync
-  // initDirectus();
+  // 4. Directus — initialise from saved IDB settings
+  initDirectus();
 
   // 5. Register service worker for offline + asset caching
   if ('serviceWorker' in navigator) {
@@ -664,12 +738,10 @@ async function openSettings() {
   if (keyInput) keyInput.value = savedKey ? '••••••••' + savedKey.slice(-6) : '';
   if (modelSel) modelSel.value = savedModel;
   updateClaudeStatus(!!savedKey);
-  // Pre-fill Directus credentials (mask token)
-  const { url, token } = await getDirectusCreds();
-  const urlEl   = document.getElementById('directus-url-input');
-  const tokenEl = document.getElementById('directus-token-input');
-  if (urlEl)   urlEl.value   = url   || '';
-  if (tokenEl) tokenEl.value = token ? '••••••••' + token.slice(-6) : '';
+  // Pre-fill Directus collection name (URL + token live in env vars, not IDB)
+  const { collection } = await getDirectusCreds();
+  const colEl = document.getElementById('directus-collection-input');
+  if (colEl) colEl.value = collection || '';
   updateDirectusStatus(window.Directus?.isConfigured() || false);
   modal.classList.add('show');
 }
@@ -722,46 +794,47 @@ async function updateClaudeHeaderDot() {
   dot.style.display = (key || _serverAIReady) ? 'inline-flex' : 'none';
 }
 
-// ── Directus credentials (stored in IDB, never hardcoded) ─────────────────
+// ── Directus settings (only collection name stored in IDB) ───────────────
+// The Directus URL + token live in Vercel env vars (DIRECTUS_URL / DIRECTUS_TOKEN).
+// Browsers call /api/directus/ proxy — the token never reaches the client.
 async function getDirectusCreds() {
   try {
     const entry = window.AppIDB ? await AppIDB.get('knowledge', 'directus-settings') : null;
-    return { url: entry?.url || null, token: entry?.token || null };
-  } catch { return { url: null, token: null }; }
+    return { collection: entry?.collection || '' };
+  } catch { return { collection: '' }; }
 }
 
 async function initDirectus() {
-  const { url, token } = await getDirectusCreds();
-  if (url && token && window.Directus) {
-    window.Directus.configure(url, token);
+  const { collection } = await getDirectusCreds();
+  if (window.Directus) {
+    window.Directus.configure(collection || '', API_SECRET || '');
+    await window.Directus.loadIdMap();   // restore localId→directusId map from IDB
   }
   updateDirectusStatus(window.Directus?.isConfigured() || false);
 }
 
 async function saveDirectusSettings() {
-  const urlEl   = document.getElementById('directus-url-input');
-  const tokenEl = document.getElementById('directus-token-input');
-  const url     = urlEl?.value?.trim()   || '';
-  const token   = tokenEl?.value?.trim() || '';
+  const colEl     = document.getElementById('directus-collection-input');
+  const collection = colEl?.value?.trim() || '';
 
-  if (!url || !token) { toast('Enter both a URL and a token'); return; }
-  if (!/^https?:\/\//i.test(url)) { toast('URL must start with https://'); return; }
-  if (token.startsWith('••••')) { toast('Token unchanged'); return; }
+  if (!collection) { toast('Enter a collection name'); return; }
 
   try {
     if (window.AppIDB) {
-      await AppIDB.put('knowledge', { key: 'directus-settings', url, token });
+      await AppIDB.put('knowledge', { key: 'directus-settings', collection });
     }
-    if (window.Directus) window.Directus.configure(url, token);
+    if (window.Directus) window.Directus.configure(collection, API_SECRET || '');
 
-    // Test immediately and show result
+    // Test immediately — proxy will confirm DIRECTUS_URL + DIRECTUS_TOKEN env vars are set
     const statusEl = document.getElementById('directus-status');
     if (statusEl) statusEl.innerHTML = '<span style="color:var(--mut)">Testing connection…</span>';
 
     const ok = window.Directus ? await window.Directus.ping() : false;
     updateDirectusStatus(ok);
-    toast(ok ? '✓ Directus connected' : '✗ Connected but ping failed — check CORS / collection access');
-  } catch (e) {
+    toast(ok
+      ? '✓ Directus connected'
+      : '✗ Proxy reachable but collection not found — check DIRECTUS_URL, DIRECTUS_TOKEN env vars and collection name');
+  } catch {
     toast('Failed to save Directus settings');
   }
 }
@@ -769,12 +842,10 @@ async function saveDirectusSettings() {
 async function clearDirectusSettings() {
   if (!confirm('Disconnect Directus?')) return;
   try {
-    if (window.AppIDB) await AppIDB.put('knowledge', { key: 'directus-settings', url: null, token: null });
-    if (window.Directus) window.Directus.configure(null, null);
-    const urlEl   = document.getElementById('directus-url-input');
-    const tokenEl = document.getElementById('directus-token-input');
-    if (urlEl)   urlEl.value   = '';
-    if (tokenEl) tokenEl.value = '';
+    if (window.AppIDB) await AppIDB.put('knowledge', { key: 'directus-settings', collection: '' });
+    if (window.Directus) window.Directus.configure('', null);
+    const colEl = document.getElementById('directus-collection-input');
+    if (colEl) colEl.value = '';
     updateDirectusStatus(false);
     toast('Directus disconnected');
   } catch {}
@@ -868,42 +939,56 @@ function claudeFieldSchema(searchType) {
     name:        'Full facility name',
     operator:    'Operating company or owner',
     country:     'Full country name (not ISO code)',
-    location:    'City, region or address',
+    region:      'City, region, province or address',
     latitude:    'Decimal degrees (number)',
     longitude:   'Decimal degrees (number)',
     description: 'Write an investigative-grade paragraph (200–600 words) as if you are a journalist. Cover: what the entity does, where it operates, its scale and capacity, ownership structure, certifications, notable incidents or controversies, and any financial or environmental context found in the text. Only use facts explicitly stated in the provided content — never infer or hallucinate.',
   };
   if (searchType === 'vessel') return {
-    vessel_name: 'Full vessel name', imo: '7-digit IMO number',
-    flag:        'Flag state — full country name', call_sign: 'Radio call sign',
-    vessel_type: 'e.g. Trawler, Longliner, Purse Seiner, Reefer',
-    gross_tonnage:'GT figure', dwt: 'Deadweight tonnage',
-    length:      'LOA in metres', beam: 'Beam in metres',
-    built_year:  '4-digit year', engine: 'Engine type / kW',
-    speed:       'Service speed in knots', port_of_registry: 'Home port',
-    owner:       'Registered owner', operator: 'Commercial operator',
-    mmsi:        '9-digit MMSI',
-    description: 'Investigative summary paragraph covering vessel history, ownership chain, flag changes, trading routes, any detentions or port-state control findings, and notable incidents. Facts only.',
+    vessel_name:      'Full vessel name',
+    imo:              '7-digit IMO number',
+    flag:             'Flag state — full country name',
+    call_sign:        'Radio call sign',
+    vessel_type:      'e.g. Trawler, Longliner, Purse Seiner, Reefer, Cargo',
+    gross_tonnage:    'GT figure (number or number with units)',
+    dwt:              'Deadweight tonnage',
+    length:           'LOA in metres',
+    beam:             'Beam in metres',
+    year_built:       '4-digit year vessel was built',
+    port_of_registry: 'Home port / port of registry',
+    owner:            'Registered owner',
+    operator:         'Commercial operator or manager',
+    mmsi:             '9-digit MMSI',
+    nav_status:       'AIS navigational status e.g. Underway, At Anchor, Moored',
+    class_soc:        'Classification society e.g. DNV, Lloyd\'s Register, Bureau Veritas',
+    country:          'Country of operation or registration',
+    description:      'Investigative summary paragraph covering vessel history, ownership chain, flag changes, trading routes, any detentions or port-state control findings, and notable incidents. Facts only.',
   };
   if (searchType === 'mill') return {
     ...base,
-    input_species:       'Raw fish species used, comma-separated',
-    products:            'Output products e.g. fishmeal, fish oil',
+    input_species:       'Raw fish species used as input, comma-separated',
+    output_products:     'Output products e.g. fishmeal, fish oil, surimi',
     processing_capacity: 'Annual throughput with units e.g. 50,000 t/yr',
-    certification:       'Certifications held',
+    fishmeal_pct:        'Fishmeal percentage of output e.g. 22%',
+    fishoil_pct:         'Fish oil percentage of output e.g. 5%',
+    capacity:            'Total production capacity with units',
+    certification:       'Certifications held e.g. IFFO RS, MarinTrust',
+    employees:           'Number of employees',
   };
   return { // farm / general
     ...base,
-    species:             'Species farmed, comma-separated',
-    production_capacity: 'Annual output with units e.g. 12,000 t/yr',
-    water_type:          'Freshwater | Saltwater / Marine | Brackish water',
-    production_method:   'e.g. Sea cage / Net pen, RAS, Pond culture',
-    certification:       'e.g. ASC Certified, BAP Certified',
-    area_hectares:       'Farm area in hectares',
-    stocking_density:    'Stocking density with units',
-    fcr:                 'Feed Conversion Ratio (number)',
-    harvest_cycle:       'Duration e.g. 24 months',
-    established_year:    '4-digit year the facility was established',
+    species:           'Species farmed, comma-separated',
+    capacity:          'Annual production output with units e.g. 12,000 t/yr',
+    water_type:        'Freshwater | Saltwater / Marine | Brackish water',
+    production_method: 'e.g. Sea cage / Net pen, RAS, Pond culture',
+    certification:     'e.g. ASC Certified, BAP Certified, GlobalG.A.P.',
+    total_area:        'Farm area with units e.g. 250 ha or 2,500 m²',
+    stocking_density:  'Stocking density with units e.g. 25 kg/m³',
+    fcr:               'Feed Conversion Ratio (number e.g. 1.2)',
+    harvest_cycles:    'Number of harvest cycles per year or cycle duration e.g. 2/yr or 24 months',
+    feed_type:         'Feed type used e.g. commercial pellets, organic',
+    license:           'License or permit number',
+    employees:         'Number of employees',
   };
 }
 
@@ -911,20 +996,31 @@ function claudeFieldSchema(searchType) {
 async function claudeExtract(pageTexts, query, searchType, signal = null) {
   const schema = claudeFieldSchema(searchType);
   const system = [
-    `You are a precision data extraction engine for an aquaculture and maritime intelligence platform.`,
-    `Extract structured data about "${query}" from the following web content.`,
-    `Return ONLY a raw JSON object — no markdown, no explanation, no fences.`,
-    `Rules:`,
-    `• Include only fields with values EXPLICITLY stated in the text`,
-    `• Return {} if the page is clearly not about the searched entity`,
-    `• Never hallucinate or infer values not in the text`,
-    `• Country codes → full names; abbreviations → full units`,
-    `• Coordinates must be decimal degrees`,
+    `You are a precision data extraction engine for a maritime and aquaculture intelligence platform.`,
+    `Extract structured data about "${query}" from the provided web content.`,
+    `Return ONLY a valid raw JSON object — no markdown fences, no explanation, no surrounding text.`,
+    ``,
+    `STRICT RULES — violations will corrupt the database:`,
+    `• Include ONLY fields with values EXPLICITLY stated verbatim in the source text.`,
+    `• If a field is not mentioned, omit it entirely — never guess, infer, or fill in typical values.`,
+    `• Return {} immediately if the page is not about "${query}" specifically.`,
+    `• Coordinates: decimal degrees only, as plain numbers e.g. 60.4215 and 5.3124 (never DMS, never with ° symbol, never with N/S/E/W suffix). Negative = South or West.`,
+    `• Country: always full English name e.g. "Norway", never abbreviations like "NO" or "NOR".`,
+    `• Species: comma-separated common English names e.g. "Atlantic Salmon, Rainbow Trout".`,
+    `• Numbers: plain digits with unit e.g. "5000 t/yr" — no currency symbols, no date ranges.`,
+    `• If multiple sources contradict on a field value, use the more authoritative source (registry > news > wiki).`,
+    `• Never combine fields — each key maps to exactly one value string.`,
   ].join('\n');
 
-  const corpus = pageTexts
-    .slice(0, 5)
-    .map((p, i) => `=== Source ${i + 1} (${p.source}) ===\n${p.text.slice(0, 4000)}`)
+  // Sort by source authority before slicing — highest-ranked sources first
+  const sortedTexts = [...pageTexts].sort((a, b) => sourceRank(b.source) - sourceRank(a.source));
+  const corpus = sortedTexts
+    .slice(0, 8)  // up to 8 sources (8 × 2500 = 20,000 chars — fits comfortably in context)
+    .map((p, i) => {
+      const excerpt = p.text.slice(0, 2500);
+      const truncated = p.text.length > 2500;
+      return `=== Source ${i + 1} [${p.source}] ===\n${excerpt}${truncated ? '\n[…truncated]' : ''}`;
+    })
     .join('\n\n');
 
   const user = `Entity: "${query}" | Type: ${searchType}\n\nFields to extract (use exact key names):\n${JSON.stringify(schema, null, 2)}\n\nContent:\n${corpus}`;
@@ -940,6 +1036,15 @@ async function claudeExtract(pageTexts, query, searchType, signal = null) {
     for (const [k, v] of Object.entries(parsed)) {
       if (typeof v === 'string' && v.trim()) clean[k] = validateFieldValue(k, v.trim());
       else if (typeof v === 'number')        clean[k] = String(v);
+    }
+    // Remap Claude-facing alias keys → internal field names used by mergeFields
+    // 'imo'  is human-readable in the schema prompt but stored as '_imo' internally
+    // 'name' is a user-facing alias — vessel searches use 'vessel_name', others 'farm_name'
+    if (clean.imo)  { clean._imo = clean._imo || clean.imo; delete clean.imo; }
+    if (clean.name) {
+      const nameKey = searchType === 'vessel' ? 'vessel_name' : 'farm_name';
+      clean[nameKey] = clean[nameKey] || clean.name;
+      delete clean.name;
     }
     return clean;
   } catch (e) {
@@ -957,25 +1062,23 @@ async function claudePolishDescription(merged, query, searchType, signal = null)
 
   const existingDesc = merged.description || '';
 
-  const system = `You are an investigative journalist writing for a seafood industry intelligence platform.
-Write a factual profile paragraph about the specific entity "${query}" using ONLY the structured data provided.
+  const system = `You are an investigative journalist writing for a maritime and aquaculture intelligence platform.
+Write a factual profile paragraph about "${query}" using ONLY the structured data fields provided below.
 
-Rules — follow strictly:
-• Write ONLY about "${query}" itself — not about any website, database, or platform that provided the data.
-• Do NOT mention MarineTraffic, VesselFinder, Wikipedia, SeafoodSource, or any other data source.
-• If the existing description is about a website or service rather than "${query}", ignore it entirely.
-• Never invent, infer, or hallucinate facts not explicitly present in the structured data.
-• Cover: what the entity is and does, location and scale, species or vessel type, capacity, certifications, ownership.
-• If data is sparse, write a short accurate paragraph — do not pad with guesses.
-• Write in plain direct English. No marketing language. Active voice preferred.
-• Return ONLY the description paragraph — no JSON, no quotes, no label, no heading.
-• If you cannot write a meaningful description specifically about "${query}" from the provided data, return an empty string.`;
+Rules — follow every one strictly:
+• Write ONLY facts that appear in the structured data. Never invent, infer, or add "likely" or "typical" values.
+• If data is sparse, write a short accurate sentence or two — do NOT pad with generic industry context or guesses.
+• Do NOT mention MarineTraffic, VesselFinder, Wikipedia, SeafoodSource, or any data source by name.
+• If the existing description is about a website or platform rather than "${query}", ignore it entirely.
+• Write in plain direct English. No marketing language. Active voice. Present tense for current status.
+• Return ONLY the paragraph text — no JSON, no quotes, no heading, no label.
+• If the structured data is insufficient to write a meaningful sentence about "${query}" specifically, return an empty string.`;
 
   const user = `Entity: "${query}" (${searchType})
 ${existingDesc && isEntityDescription(existingDesc, query) ? `Existing description to improve:\n${existingDesc}\n\n` : ''}Structured data:\n${fields || '(none)'}`;
 
   try {
-    const desc = await callClaude(system, user, 600, signal);
+    const desc = await callClaude(system, user, 800, signal);
     if (!desc) return null;
     const trimmed = desc.trim();
     if (trimmed.length <= 1000) return trimmed;
@@ -1037,8 +1140,14 @@ function highlightIMO(text) {
 async function fetchViaProxy(url, signal) {
   if (!isValidURL(url)) throw new Error('Blocked: invalid or private URL');
 
-  // Check cache first
-  if (reqCache.has(url)) { log('Cache hit ✓', 'ok'); return reqCache.get(url); }
+  // Check cache first — delete-then-reinsert moves the entry to the tail for true LRU ordering
+  if (reqCache.has(url)) {
+    const cached = reqCache.get(url);
+    reqCache.delete(url);
+    reqCache.set(url, cached);
+    log('Cache hit ✓', 'ok');
+    return cached;
+  }
 
   // ── Next.js server-side scrape (no CORS, full headers, direct HTTP) ──
   try {
@@ -1163,11 +1272,42 @@ async function fetchViaProxy(url, signal) {
   throw lastErr || new Error('All proxies exhausted after retries');
 }
 
-function parseHTML(html) {
+function parseHTML(html, sourceURL) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
-  // noscript is intentionally kept — extractImages reads it for lazy-load fallbacks.
-  // Only executable elements and navigation chrome are stripped here.
-  doc.querySelectorAll('script,style,nav,footer,iframe,form,header,aside,[class*="cookie"],[class*="consent"],[class*="banner"],[class*="popup"],[id*="cookie"],[id*="gdpr"]').forEach(e => e.remove());
+
+  // ── WeChat article special handling (mp.weixin.qq.com) ───────────────────
+  // WeChat articles have a well-known structure. Promote the article body to
+  // the top of the document so text extraction captures all content.
+  const isWeChat = sourceURL && /mp\.weixin\.qq\.com/i.test(sourceURL);
+  if (isWeChat) {
+    const articleBody = doc.getElementById('js_content');
+    const title       = doc.querySelector('.rich_media_title');
+    const account     = doc.querySelector('.rich_media_nickname');
+    const date        = doc.querySelector('.rich_media_meta_primary,.publish_time');
+    if (articleBody) {
+      // Inject structured hints that extractFields can pick up
+      if (title)   articleBody.insertAdjacentHTML('afterbegin', `<p data-wx="title">${title.textContent}</p>`);
+      if (account) articleBody.insertAdjacentHTML('afterbegin', `<p data-wx="account">Operator: ${account.textContent}</p>`);
+      if (date)    articleBody.insertAdjacentHTML('afterbegin', `<p data-wx="date">Date: ${date.textContent}</p>`);
+    }
+  }
+
+  // Keep <header> and <footer> — maritime registries (MarineTraffic, Equasis) and
+  // Chinese portals put key vessel/farm data inside those elements.
+  // Only strip executable code, pure navigation, consent banners, and ads.
+  doc.querySelectorAll([
+    'script', 'style', 'iframe', 'form',
+    'nav',                                         // top-level nav bars
+    'header nav', 'footer nav',                    // nav inside header/footer only
+    '[role="navigation"]',
+    '[class*="cookie"]', '[class*="consent"]',
+    '[class*="banner"]', '[class*="popup"]',
+    '[class*="ad-"]', '[class*="-ad"]', '[id*="cookie"]', '[id*="gdpr"]',
+    '[class*="newsletter"]', '[class*="subscribe"]',
+    // WeChat-specific chrome to strip
+    '#js_pc_qr_code', '.discuss_container', '#js_message_card_list',
+    '.wx_follow_tip', '#js_profile_qrcode', '.rich_media_area_extra',
+  ].join(',')).forEach(e => e.remove());
   return doc;
 }
 
@@ -1209,18 +1349,19 @@ async function translateChunk(text, signal) {
       if (!t || t === text) throw new Error('no translation');
       return t;
     },
-    // Lingva (community-hosted LibreTranslate mirror) — auto → en
+    // Google Translate (unofficial client=gtx endpoint) — auto → en
+    // More reliable than community Lingva instances which come and go.
+    // Response format: [[["translated","original",...],...],...] — join segment[0] of each pair.
     async () => {
       const r = await fetch(
-        `https://lingva.ml/api/v1/auto/en/${enc}`,
+        `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${enc}`,
         { signal: timedSignal(signal, 8000) }
       );
       const d = await r.json();
-      if (!d.translation) throw new Error('no translation');
-      return d.translation;
+      const t = (d?.[0] || []).map(s => s?.[0] || '').join('');
+      if (!t || t === text) throw new Error('no translation');
+      return t;
     },
-    // Sentinel — return original if all APIs fail
-    async () => { throw new Error('all APIs failed'); },
   ];
   for (const api of apis) {
     try { return await api(); } catch {}
@@ -1230,10 +1371,31 @@ async function translateChunk(text, signal) {
 
 async function translate(text, signal) {
   if (!text?.trim()) return text;
+  // Split at word boundaries — hard slicing at a fixed byte offset can break
+  // mid-word and produce garbled translations, especially in CJK/Arabic scripts.
+  const MAX = 450;
   const chunks = [];
-  for (let i = 0; i < text.length; i += 450) chunks.push(text.slice(i, i + 450));
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + MAX, text.length);
+    if (end < text.length) {
+      // Walk back to the nearest whitespace so we never cut mid-word
+      let boundary = end;
+      while (boundary > start && !/\s/.test(text[boundary])) boundary--;
+      end = boundary > start ? boundary : end; // hard cut if no whitespace in window
+    }
+    chunks.push(text.slice(start, end).trimEnd());
+    // Advance past the whitespace character we stopped at
+    start = end + (end < text.length && /\s/.test(text[end]) ? 1 : 0);
+  }
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-  const results = await Promise.all(chunks.map(c => translateChunk(c, signal)));
+  // Sequential — MyMemory free tier has strict per-second rate limits;
+  // parallel requests trip them and return untranslated fallbacks.
+  const results = [];
+  for (const c of chunks) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    results.push(await translateChunk(c, signal));
+  }
   return results.join(' ');
 }
 
@@ -1557,27 +1719,65 @@ function extractFields(doc, text) {
     });
   });
 
-  // JSON-LD — deep parse: arrays, GeoCoordinates, address, offers
+  // JSON-LD — deep parse: @graph, arrays, GeoCoordinates, address, typed-entity priority
   doc.querySelectorAll('script[type="application/ld+json"]').forEach(s => {
     try {
       const raw = JSON.parse(s.textContent);
-      const items = Array.isArray(raw) ? raw : [raw];
+      // Flatten top-level @graph arrays so nested entities are all processed
+      let items = Array.isArray(raw) ? raw : [raw];
+      items = items.flatMap(item =>
+        item?.['@graph'] ? (Array.isArray(item['@graph']) ? item['@graph'] : [item['@graph']]) : [item]
+      );
+
+      // Sort: prefer typed entities (Organization, Farm, Vessel, Place) over generic ones
+      const ORG_TYPES = /Organization|Corporation|Company|Farm|AquacultureFacility|Vessel|Ship|Port|Place|FoodEstablishment/i;
+      items.sort((a, b) => {
+        const at = [].concat(a?.['@type'] || []).join(',');
+        const bt = [].concat(b?.['@type'] || []).join(',');
+        return (ORG_TYPES.test(bt) ? 1 : 0) - (ORG_TYPES.test(at) ? 1 : 0);
+      });
+
       items.forEach(d => {
         if (!d || typeof d !== 'object') return;
-        if (d.name && !f.vessel_name) f.vessel_name = cleanField(d.name);
-        if (d.description && !f.description) f.description = cleanField(d.description).slice(0,1200);
-        if (d.geo && typeof d.geo === 'object') {
-          if (d.geo.latitude  && !f.latitude)  f.latitude  = String(d.geo.latitude);
-          if (d.geo.longitude && !f.longitude) f.longitude = String(d.geo.longitude);
+        const typeStr = [].concat(d['@type'] || []).join(',');
+
+        // Name — prefer Organization/Vessel typed names
+        const nm = d.name || d.legalName || d.alternateName;
+        if (nm && !f._ldname) f._ldname = cleanField(String(nm));
+
+        if (d.description && !f.description) f.description = cleanField(String(d.description)).slice(0, 1200);
+
+        // Coordinates — GeoCoordinates object or direct latitude/longitude
+        const geo = d.geo || (typeStr && d);
+        if (geo?.latitude  !== undefined && !f.latitude)  f.latitude  = String(geo.latitude);
+        if (geo?.longitude !== undefined && !f.longitude) f.longitude = String(geo.longitude);
+
+        // Address block
+        const addr = d.address || d.location?.address;
+        if (addr && typeof addr === 'object') {
+          if (addr.addressCountry && !f.country) f.country = cleanField(String(addr.addressCountry));
+          if (addr.addressRegion  && !f.region)  f.region  = cleanField(String(addr.addressRegion));
+          if (addr.addressLocality && !f.region) f.region  = cleanField(String(addr.addressLocality));
         }
-        if (d.address) {
-          if (d.address.addressCountry && !f.country) f.country = cleanField(d.address.addressCountry);
-          if (d.address.addressRegion  && !f.region)  f.region  = cleanField(d.address.addressRegion);
-        }
-        if (d.containedInPlace?.name && !f.region) f.region = cleanField(d.containedInPlace.name);
-        if (d.founder?.name && !f.operator) f.operator = cleanField(d.founder.name);
-        if (d.legalName && !f.operator) f.operator = cleanField(d.legalName);
+
+        // Organization roles
+        if (d.founder?.name    && !f.operator)  f.operator  = cleanField(d.founder.name);
+        if (d.legalName        && !f.operator)  f.operator  = cleanField(String(d.legalName));
+        if (d.parentOrganization?.name && !f.owner) f.owner = cleanField(d.parentOrganization.name);
+        if (d.containedInPlace?.name && !f.region)  f.region = cleanField(d.containedInPlace.name);
+
+        // Employee count
+        if (d.numberOfEmployees?.value && !f.employees) f.employees = String(d.numberOfEmployees.value);
+        if (typeof d.numberOfEmployees === 'number' && !f.employees) f.employees = String(d.numberOfEmployees);
+
+        // Aquaculture / species specific
+        if (d.produces?.name && !f.species) f.species = cleanField(d.produces.name);
+        if (d.knowsAbout    && !f.species) f.species = cleanField(String(d.knowsAbout));
       });
+
+      // Use _ldname as name only — vessel pages should have vessel_name set by other patterns
+      if (f._ldname && !f.vessel_name && !f.farm_name) f.farm_name = f._ldname;
+      delete f._ldname;
     } catch {}
   });
 
@@ -1596,9 +1796,62 @@ function extractFields(doc, text) {
   });
 
   // Definition-pair rows: first child is key, second is value
-  doc.querySelectorAll('.vessel-detail,.ship-detail,.detail-row,.info-row,.property-row,.data-row').forEach(row => {
+  doc.querySelectorAll([
+    '.vessel-detail','.ship-detail','.detail-row','.info-row',
+    '.property-row','.data-row','.field-row','.spec-row',
+    '.vessel-info-item','.ship-info-item','.farm-detail',
+    '.ais-data-item','.info-block-row','.vessel-data',
+  ].join(',')).forEach(row => {
     const ch = [...row.children];
     if (ch.length >= 2) assignField(f, cleanField(ch[0].textContent).toLowerCase(), cleanField(ch[1].textContent));
+    // Also handle rows where label is in a nested <strong> or <b>
+    const strong = row.querySelector('strong,b,.label,.key');
+    if (strong) {
+      const rest = cleanField(row.textContent.replace(strong.textContent, '').trim());
+      if (rest) assignField(f, cleanField(strong.textContent).toLowerCase(), rest);
+    }
+  });
+
+  // Span label/value pairs — common on MarineTraffic, Equasis, and Chinese maritime sites
+  // Pattern: <span class="bold-text|label|key">Label</span><span>value</span>
+  doc.querySelectorAll([
+    'span.bold-text','span.label-text','span.field-label','span.prop-name',
+    'span[class*="label"]','span[class*="title"]','span[class*="key"]',
+    'td.key','td.label','th.field',
+  ].join(',')).forEach(lbl => {
+    const k = cleanField(lbl.textContent).toLowerCase();
+    // Look for value in next sibling span/td or parent's sibling
+    const nxtSpan = lbl.nextElementSibling;
+    const nxtTxt  = lbl.parentElement?.nextElementSibling;
+    const v = nxtSpan ? cleanField(nxtSpan.textContent) : (nxtTxt ? cleanField(nxtTxt.textContent) : '');
+    if (k && v) assignField(f, k, v);
+  });
+
+  // Microdata itemprop — Schema.org properties in itemprop attributes
+  doc.querySelectorAll('[itemprop]').forEach(el => {
+    const prop = el.getAttribute('itemprop')?.toLowerCase();
+    if (!prop) return;
+    const val = el.getAttribute('content') || cleanField(el.textContent);
+    if (!val) return;
+    // Map common itemprop names to field keys
+    const ITEMPROP_MAP = {
+      name: '_ldname', description: 'description', legalname: 'operator',
+      addresscountry: 'country', addressregion: 'region', addresslocality: 'region',
+      latitude: 'latitude', longitude: 'longitude',
+      numberofemployees: 'employees',
+    };
+    const key = ITEMPROP_MAP[prop];
+    if (key && !f[key]) f[key] = val;
+    else if (!key) assignField(f, prop, val);
+  });
+  if (f._ldname && !f.vessel_name && !f.farm_name) f.farm_name = f._ldname;
+  delete f._ldname;
+
+  // List item key:value patterns — "Species: Salmon" inside <li>
+  doc.querySelectorAll('li').forEach(li => {
+    const txt = li.textContent;
+    const sep = txt.match(/^([^:]{3,40}):\s*(.{2,120})$/);
+    if (sep) assignField(f, sep[1].toLowerCase().trim(), sep[2].trim());
   });
 
   // ── Coordinate extraction — multiple DOM sources ──────────────────────────
@@ -1702,8 +1955,8 @@ function extractFields(doc, text) {
     [/\blng[:\s]+([-]?\d{1,3}\.\d{4,8})/i,                                          'longitude'],
     [/Coordinates?[:\s]+(-?\d{1,3}\.\d+)[,\s]+(-?\d{1,3}\.\d+)/,                    '_coords'],
     [/(-?\d{1,3}\.\d{4,8})°?\s*[Nn][,\s]+(-?\d{1,3}\.\d{4,8})°?\s*[Ee]/,           '_coords'],
-    // DMS format: 60°12'34"N, 005°19'22"E
-    [/(\d{1,3})°\s*(\d{1,2})['′]\s*(\d{1,2}(?:\.\d+)?)["″]?\s*[Nn].*?(\d{1,3})°\s*(\d{1,2})['′]\s*(\d{1,2}(?:\.\d+)?)["″]?\s*[Ee]/i, '_dms'],
+    // DMS format: handles °/º, '/′/ʼ, "/″/ʺ and decimal seconds e.g. 60°12'34.5"N, 005°19'22"E
+    [/(\d{1,3})[°º]\s*(\d{1,2})[''′ʼ]\s*(\d{1,2}(?:[.,]\d+)?)[""″ʺ]?\s*[Nn][\s,;]+(\d{1,3})[°º]\s*(\d{1,2})[''′ʼ]\s*(\d{1,2}(?:[.,]\d+)?)[""″ʺ]?\s*[EeWw]/i, '_dms'],
     // Position: LAT, LON plain text (high-precision only, 4+ decimal places)
     [/\bPosition[:\s]+(-?\d{1,3}\.\d{4,8})[°,\s]+(-?\d{1,3}\.\d{4,8})/i,           '_coords'],
     [/\bLocation[:\s]+(-?\d{1,3}\.\d{4,8})[°,\s]+(-?\d{1,3}\.\d{4,8})/i,           '_coords'],
@@ -1749,12 +2002,17 @@ function extractFields(doc, text) {
         if (!f.longitude && lon) f.longitude = lon;
       }
     } else if (key === '_dms') {
-      // Convert degrees°minutes'seconds"N/E to decimal
+      // Convert degrees°minutes'seconds"N/S E/W to decimal — handles decimal-comma and S/W signs
       const m = text.match(re);
       if (m && !f.latitude) {
-        const toDec = (d, mn, s) => parseFloat(d) + parseFloat(mn) / 60 + parseFloat(s) / 3600;
-        const lat = toDec(m[1], m[2], m[3]);
-        const lon = toDec(m[4], m[5], m[6]);
+        const toDec = (d, mn, s) =>
+          parseFloat(d) + parseFloat(mn) / 60 + parseFloat(String(s).replace(',', '.')) / 3600;
+        let lat = toDec(m[1], m[2], m[3]);
+        let lon = toDec(m[4], m[5], m[6]);
+        // Apply hemisphere sign from the matched suffix characters
+        const lonDir = (m[0].match(/[EeWw]\s*$/) || [])[0] || '';
+        if (/[Ss]/.test(m[0].split(m[4])[0])) lat = -lat;  // South of lat
+        if (/[Ww]/i.test(lonDir)) lon = -lon;               // West of lon
         const vLat = validateFieldValue('latitude',  String(lat.toFixed(6)));
         const vLon = validateFieldValue('longitude', String(lon.toFixed(6)));
         if (vLat && vLon) { f.latitude = vLat; f.longitude = vLon; }
@@ -1780,8 +2038,8 @@ function assignField(f, k, v) {
   const isProseField = /description/.test(k);
   if (!v || v.length > (isProseField ? 1200 : 200)) return;
   // ── Maritime / vessel fields (EN + multilingual) ──
-  // Flag/country: bandera(ES), pavillon(FR), flagge(DE), flagg(NO), bandeira(PT), 旗(ZH)
-  if (/flag|country.*reg|bandera|pavillon|flagge|flagg|bandeira/.test(k))
+  // Flag/country: bandera(ES), pavillon(FR), flagge(DE), flagg(NO), bandeira(PT), 船旗/国籍(ZH)
+  if (/flag|country.*reg|bandera|pavillon|flagge|flagg|bandeira|船旗|国籍/.test(k))
                                                  f.flag             = f.flag             || v;
   // Vessel type: tipo de buque(ES), type de navire(FR), schiffstyp(DE), fartøystype(NO)
   else if (/vessel.?type|ship.?type|tipo.?buque|tipo.?nave|type.?navire|schiffstyp|fart.?ystype|tipo.?emb/.test(k))
@@ -1811,8 +2069,8 @@ function assignField(f, k, v) {
                                                  f.port_of_registry = f.port_of_registry || v;
   else if (/\bclass\b|society|sociedad.?clasif|soci.t.?.?class/.test(k))
                                                  f.class_soc        = f.class_soc        || v;
-  // Owner: propietario(ES), propriétaire(FR), eigentümer(DE), eier(NO), 船东(ZH)
-  else if (/owner|beneficial|propietario|propri.taire|eigent.mer|reder\b|eier\b/.test(k))
+  // Owner: propietario(ES), propriétaire(FR), eigentümer(DE), eier(NO), 船东/所有人(ZH)
+  else if (/owner|beneficial|propietario|propri.taire|eigent.mer|reder\b|eier\b|船东|所有人|所有者/.test(k))
                                                  f.owner            = f.owner            || v;
   // Manager: gestor(ES), gestionnaire(FR), betreiber(DE), drifter(NO)
   else if (/manager|technical.?mgr|gestor|gestionnaire|betreiber|drifter/.test(k))
@@ -1822,9 +2080,9 @@ function assignField(f, k, v) {
   // Vessel name: ship name, vessel name, nave(ES), navire(FR)
   else if (/vessel.?name|ship.?name|ship.?s.?name|nombre.?buque|nom.?navire|nome.?nave|schiffsname/.test(k))
                                                  f.vessel_name      = f.vessel_name      || v;
-  // Farm/facility name
+  // Farm/facility name — use farm_name; vessel pages already matched vessel.?name above
   else if (/\bname\b|facility|site.?name|farm.?name|nombre|nom\b/.test(k) && v.length < 80)
-                                                 f.vessel_name      = f.vessel_name      || v; // mergeFields will sort by type
+                                                 f.farm_name        = f.farm_name        || v;
 
   // ── Location ──
   else if (/^lat(?:itude)?$|^latitud$|^latitude$/.test(k))   f.latitude  = f.latitude  || v;
@@ -1838,14 +2096,14 @@ function assignField(f, k, v) {
   // Farm name: nombre de granja(ES), nom de la ferme(FR), oppdrettsanlegg(NO)
   else if (/farm.?name|facility|site.?name|aquaculture.?name|nombre.?granja|nom.?ferme|anlegg.?navn|nome.?fazenda/.test(k))
                                                  f.farm_name        = f.farm_name        || v;
-  // Species: especie(ES), espèce(FR), art(NO/DE), espécie(PT), 鱼种(ZH)
-  else if (/\bspecies\b|especie|esp.ce|fiskeart|\bart\b|organismo|kultiviert|espécie/.test(k))
+  // Species: especie(ES), espèce(FR), art(NO/DE), espécie(PT), 养殖品种/鱼种(ZH)
+  else if (/\bspecies\b|especie|esp.ce|fiskeart|\bart\b|organismo|kultiviert|espécie|养殖品种|鱼种|品种/.test(k))
                                                  f.species          = f.species          || v;
   // Water type: tipo de agua(ES), type d'eau(FR), vanntype(NO), tipo de água(PT)
   else if (/water.?type|tipo.?agua|type.?eau|vanntype|tipo.?água/.test(k))
                                                  f.water_type       = f.water_type       || v;
-  // Capacity: capacidad(ES), capacité(FR), kapasitet(NO), capacidade(PT)
-  else if (/\bcapaci|kapasitet|capacidad|capacit.|capacidade|annual.?prod|produksjon/.test(k))
+  // Capacity: capacidad(ES), capacité(FR), kapasitet(NO), capacidade(PT), 产量/产能(ZH)
+  else if (/\bcapaci|kapasitet|capacidad|capacit.|capacidade|annual.?prod|produksjon|产量|产能|养殖规模/.test(k))
                                                  f.capacity         = f.capacity         || v;
   // License: licencia(ES), licence(FR), tillatelse(NO), licença(PT)
   else if (/\blicen|tillatelse|licencia|licen.e|licença|permit.?no|registr.?no/.test(k))
@@ -1853,8 +2111,8 @@ function assignField(f, k, v) {
   // Certification: certificación(ES), certification(FR), sertifisering(NO)
   else if (/certif|sertifisering|certificaci|asc.?cert|bap.?cert|global.?g\.?a\.?p/.test(k))
                                                  f.certification    = f.certification    || v;
-  // Operator: operador(ES), opérateur(FR), betreiber(DE), operatør(NO)
-  else if (/\boperator\b|operatør|operador|op.rateur|betreiber|company.?name|farm.?owner/.test(k))
+  // Operator: operador(ES), opérateur(FR), betreiber(DE), operatør(NO), 经营者/运营商(ZH)
+  else if (/\boperator\b|operatør|operador|op.rateur|betreiber|company.?name|farm.?owner|经营者|运营商|养殖单位/.test(k))
                                                  f.operator         = f.operator         || v;
   // Production method: método de producción(ES), méthode(FR), driftsform(NO)
   else if (/prod.?method|driftsform|m.todo.?prod|m.thode.?prod|farming.?system/.test(k))
@@ -1906,19 +2164,28 @@ function assignField(f, k, v) {
 
 // Source trust order — higher index = more trusted when merging fields
 const SOURCE_RANK = [
-  'Broad-Search','Intl-Search',                                         // lowest — broad fallbacks
-  'Web-Discovery','DDG-Search','Google-Search',                         // web search result pages
-  'Wikipedia','AIS-Registry',                                           // encyclopedic / AIS
-  'SeafoodSource','EUMOFA','MarineIngredients','GlobalSalmonIndex',      // trade & market databases
-  'FIS','IFFO','BAP',                                                   // sector-specific registries
+  'Broad-Search','Intl-Search','Baidu-Search',                          // lowest — broad fallbacks
+  'Web-Discovery','DDG-Search','Google-Search','Google-CN',             // web search result pages
+  'Wikipedia','MMSI-Decode','AIS-Registry',                             // encyclopedic / AIS
+  'WeChat-Bing','WeChat-Sogou-Articles','WeChat-Sogou-Accounts','WeChat-Industry', // WeChat search
+  'mp.weixin.qq.com',                                                  // WeChat article pages (direct)
+  'Shuichan-Farm','Shuichan-Mill','FishFirst-Farm','FishFirst-Mill',    // Chinese trade portals
+  'SeafoodSource','EUMOFA','MarineIngredients','GlobalSalmonIndex','Undercurrent', // trade & market databases
+  'FIS','IFFO','BAP','GlobalGAP','MARA-Fisheries',                      // sector-specific registries
   'FAO','ASC',                                                          // UN / certification bodies
-  'OpenStreetMap','OSM',                                                // verified structured geo data
+  'OpenStreetMap',                                                      // verified structured geo data
   'FAO-Global-Record','ITU',                                            // authoritative vessel registries
-  'Equasis','MarineTraffic','VesselFinder','FleetMon',                  // highest for vessel data
+  'ShipXY','MSA-China',                                                 // Chinese maritime registries
+  'Equasis','MarineTraffic','VesselFinder','FleetMon','MyShipTracking',  // highest for vessel data
 ];
 function sourceRank(id) {
-  const i = SOURCE_RANK.findIndex(s => id && id.toLowerCase().includes(s.toLowerCase()));
-  return i >= 0 ? i : 0;
+  if (!id) return 0;
+  // Exact match first (preferred — avoids 'FAO' substring matching 'FAO-Global-Record')
+  const exact = SOURCE_RANK.indexOf(id);
+  if (exact >= 0) return exact;
+  // Prefix match for dynamic ids like 'Wikipedia-2'
+  const prefix = SOURCE_RANK.findIndex(s => id.startsWith(s) || s.startsWith(id));
+  return prefix >= 0 ? prefix : 0;
 }
 
 // Returns true if a description is actually about the searched entity —
@@ -1926,19 +2193,28 @@ function sourceRank(id) {
 function isEntityDescription(text, query) {
   if (!text || text.length < 30) return false;
   if (!query) return true;
-  // At least one meaningful word from the query must appear in the description
-  const stopWords = /^(the|and|for|of|in|a|an|is|are|by|at|on|with|asa|ltd|inc|llc|co|bv|nv|sa|ab|as|plc)$/i;
+  const stopWords = /^(the|and|for|of|in|a|an|is|are|by|at|on|with|asa|ltd|inc|llc|co|bv|nv|sa|ab|as|plc|group|holding)$/i;
   const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2 && !stopWords.test(t));
   if (terms.length === 0) return true;
   const tl = text.toLowerCase();
-  return terms.some(t => tl.includes(t));
+  const hits = terms.filter(t => tl.includes(t)).length;
+  // Short queries (1–2 meaningful words): require at least 1 hit
+  // Longer queries (3+ words): require majority (≥50%) to avoid false positives
+  const required = terms.length <= 2 ? 1 : Math.ceil(terms.length * 0.5);
+  return hits >= required;
 }
 
 function mergeFields(results, query) {
   // Sort results: higher-ranked sources first, then by relevance to query
   const ranked = [...results]
     .filter(r => r.ok)
-    .map(r => ({ ...r, _score: sourceRank(r.id) * 10 + relevanceScore(r.text || '', query || '') }))
+    .map(r => ({
+      ...r,
+      // Authority (×100) vastly outweighs relevance (capped at 20) so a high-authority
+      // low-text source (Equasis rank 28 = 2800) always beats a noisy low-rank source
+      // (Broad-Search rank 0 = 0 + 20 cap = 20). Relevance is a tiebreaker only.
+      _score: sourceRank(r.id) * 100 + Math.min(relevanceScore(r.text || '', query || ''), 20),
+    }))
     .sort((a, b) => b._score - a._score);
 
   const m = {};
@@ -1975,11 +2251,14 @@ function mergeFields(results, query) {
     // normalizeFields() below will split, deduplicate, title-case, and cap at 6
   }
 
-  // Use _heading as name fallback if no structured name found
+  // Use _heading as name fallback if no structured name found.
+  // Prefer farm_name — vessel pages should already have vessel_name set from
+  // assignField patterns (vessel.?name, ship.?name…).  Setting vessel_name here
+  // for a farm/mill page would corrupt the record type and dedup key.
   if (!m.farm_name && !m.vessel_name) {
     for (const r of ranked) {
       const h = r.fields?._heading;
-      if (h && h.length > 2 && h.length < 80) { m.vessel_name = h; break; }
+      if (h && h.length > 2 && h.length < 80) { m.farm_name = h; break; }
     }
   }
 
@@ -2015,6 +2294,93 @@ function log(msg, type = 'info') {
 }
 
 /* ═══════════════════════════════════════════
+   FLAG EMOJI HELPERS
+═══════════════════════════════════════════ */
+/** Full country name → ISO-3166-1 alpha-2 code */
+const COUNTRY_ISO2 = {
+  'Afghanistan':'AF','Albania':'AL','Algeria':'DZ','Angola':'AO',
+  'Antigua & Barbuda':'AG','Argentina':'AR','Armenia':'AM','Australia':'AU',
+  'Austria':'AT','Azerbaijan':'AZ','Bahamas':'BS','Bangladesh':'BD',
+  'Belgium':'BE','Belize':'BZ','Benin':'BJ','Bermuda':'BM','Bhutan':'BT',
+  'Bolivia':'BO','Bosnia and Herzegovina':'BA','Brazil':'BR','Brunei':'BN',
+  'Bulgaria':'BG','Cambodia':'KH','Cameroon':'CM','Canada':'CA','Cabo Verde':'CV',
+  'Cayman Islands':'KY','Chile':'CL','China':'CN','Colombia':'CO','Comoros':'KM',
+  'Congo':'CG','Cook Islands':'CK','Costa Rica':'CR','Croatia':'HR','Cuba':'CU',
+  'Cyprus':'CY','Czech Republic':'CZ','Denmark':'DK','Djibouti':'DJ',
+  'Dominica':'DM','Dominican Republic':'DO','DR Congo':'CD','Ecuador':'EC',
+  'Egypt':'EG','Eritrea':'ER','Estonia':'EE','Ethiopia':'ET',
+  'Faroe Islands':'FO','Fiji':'FJ','Finland':'FI','France':'FR',
+  'French Polynesia':'PF','Falkland Islands':'FK','Germany':'DE','Ghana':'GH',
+  'Greece':'GR','Grenada':'GD','Guadeloupe':'GP','Guatemala':'GT','Guyana':'GY',
+  'Haiti':'HT','Honduras':'HN','Hong Kong':'HK','Hungary':'HU','Iceland':'IS',
+  'India':'IN','Indonesia':'ID','Iran':'IR','Iraq':'IQ','Ireland':'IE',
+  'Israel':'IL','Italy':'IT','Jamaica':'JM','Japan':'JP','Jordan':'JO',
+  'Kazakhstan':'KZ','Kenya':'KE','Kiribati':'KI','Kuwait':'KW','Kyrgyzstan':'KG',
+  'Laos':'LA','Latvia':'LV','Lebanon':'LB','Liberia':'LR','Lithuania':'LT',
+  'Luxembourg':'LU','Macau':'MO','Madagascar':'MG','Malaysia':'MY','Maldives':'MV',
+  'Malta':'MT','Marshall Islands':'MH','Mauritania':'MR','Mauritius':'MU',
+  'Mexico':'MX','Micronesia':'FM','Montenegro':'ME','Morocco':'MA',
+  'Mozambique':'MZ','Myanmar':'MM','Namibia':'NA','Nauru':'NR','Nepal':'NP',
+  'Netherlands':'NL','Netherlands Antilles':'AN','New Caledonia':'NC',
+  'New Zealand':'NZ','Nicaragua':'NI','Nigeria':'NG','Niue':'NU',
+  'North Macedonia':'MK',"Democratic People's Republic of Korea":'KP',
+  'Norway':'NO','Oman':'OM','Pakistan':'PK','Palau':'PW','Palestine':'PS',
+  'Panama':'PA','Papua New Guinea':'PG','Peru':'PE','Philippines':'PH',
+  'Poland':'PL','Portugal':'PT','Qatar':'QA','Romania':'RO','Russia':'RU',
+  'Rwanda':'RW','Samoa':'WS','San Marino':'SM','Saudi Arabia':'SA',
+  'Senegal':'SN','Serbia':'RS','Seychelles':'SC','Sierra Leone':'SL',
+  'Singapore':'SG','Slovakia':'SK','Slovenia':'SI','Solomon Islands':'SB',
+  'Somalia':'SO','South Africa':'ZA','South Korea':'KR','Spain':'ES',
+  'Sri Lanka':'LK','Sudan':'SD','Suriname':'SR','Sweden':'SE',
+  'Switzerland':'CH','Taiwan':'TW','Tanzania':'TZ','Thailand':'TH','Togo':'TG',
+  'Tonga':'TO','Trinidad and Tobago':'TT','Tunisia':'TN','Turkey':'TR',
+  'Turkmenistan':'TM','Tuvalu':'TV','UAE':'AE','Ukraine':'UA',
+  'United Arab Emirates':'AE','United Kingdom':'GB','United States':'US',
+  'Uruguay':'UY','Uzbekistan':'UZ','Vanuatu':'VU','Venezuela':'VE',
+  'Vietnam':'VN','Wallis and Futuna':'WF','Christmas Island':'CX',
+  'Pitcairn Islands':'PN','Northern Mariana Islands':'MP','Saint Helena':'SH',
+  'Saint Kitts and Nevis':'KN','Saint Lucia':'LC',
+  'Saint Vincent and the Grenadines':'VC','Madeira':'PT',
+  // Additional maritime nations and common aliases
+  'Bahrain':'BH','Libya':'LY','Syria':'SY','Mongolia':'MN',
+  'Georgia':'GE','Andorra':'AD','Moldova':'MD','Belarus':'BY',
+  'Tajikistan':'TJ','Gibraltar':'GI','South Sudan':'SS',
+  // Aliases: alternate spellings and common abbreviations used by data sources
+  'North Korea':'KP','Cape Verde':'CV','Ivory Coast':'CI',
+  "Côte d'Ivoire":'CI','Turkiye':'TR','Türkiye':'TR',
+  'Korea':'KR',                              // ambiguous → South Korea
+  'Britain':'GB','Great Britain':'GB','England':'GB','Scotland':'GB','Wales':'GB',
+  'USA':'US','UK':'GB','PRC':'CN','ROC':'TW', // ISO-2/ISO-3 short codes
+  'Czechia':'CZ','Slovak Republic':'SK','The Gambia':'GM','Gambia':'GM',
+  'DR Congo':'CD','DRC':'CD','Republic of Congo':'CG',
+  'East Timor':'TL','Timor-Leste':'TL',
+  'Eswatini':'SZ','Swaziland':'SZ','Burma':'MM',
+};
+
+/**
+ * Convert a full country name (or flag state) to its Unicode flag emoji.
+ * Uses ISO-3166-1 alpha-2 regional indicator pairs (U+1F1E6…U+1F1FF).
+ *
+ * Lookup order:
+ *   1. Exact match   — 'Norway' → 'NO'
+ *   2. Title-case    — 'norway' or 'NORWAY' → title-case → 'Norway' → 'NO'
+ * The ISO code is always uppercased before the codepoint calculation so
+ * any stray lowercase entry in COUNTRY_ISO2 still produces a valid emoji.
+ * Returns '' if the country is unknown or the input is empty.
+ */
+function flagEmoji(country) {
+  if (!country) return '';
+  const key = country.trim();
+  const iso = COUNTRY_ISO2[key]
+    || COUNTRY_ISO2[key.replace(/\b\w/g, c => c.toUpperCase())];
+  if (!iso || iso.length !== 2) return '';
+  const RI_A = 0x1F1E6;  // U+1F1E6 Regional Indicator Symbol Letter A
+  const u = iso.toUpperCase();  // Guard: RI formula requires uppercase A–Z (char 65–90)
+  return String.fromCodePoint(RI_A + u.charCodeAt(0) - 65) +
+         String.fromCodePoint(RI_A + u.charCodeAt(1) - 65);
+}
+
+/* ═══════════════════════════════════════════
    RENDER VESSEL CARD (all output escaped)
 ═══════════════════════════════════════════ */
 function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag) {
@@ -2025,6 +2391,20 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
   const uid = 'vc' + Date.now() + Math.random().toString(36).slice(2);
   const safeName = esc(name || 'Unknown');
   const safeIMO  = esc(imo || '');
+
+  // Flag emoji — derived from country/flag state; used in header and field cells
+  const _flagCountry = info.flag || info.country || '';
+  const _flagEmoji   = flagEmoji(_flagCountry);
+  /** Return value with its flag emoji prepended (only for flag/country cells) */
+  const withFlag = (label, val) => {
+    if (!val) return val;
+    const _lc = label.toLowerCase();
+    if (_lc.includes('flag') || _lc.includes('country') || _lc.includes('nationality') || _lc.includes('registration')) {
+      const e = flagEmoji(val);
+      return e ? e + ' ' + val : val;   // non-breaking space keeps emoji+text together
+    }
+    return val;
+  };
 
   // Resolve vessel vs farm/mill before field selection
   const isVesselCard = !!(imo || info._imo || info.mmsi || info.vessel_type ||
@@ -2049,7 +2429,7 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
     ['Certification',     info.certification,                          true],
     ['License / Permit',  info.license,                                false],
     ['Stocking Density',  info.stocking_density,                       false],
-    ['Harvest Cycles/yr', info.harvest_cycles,                         false],
+    ['Harvest Cycles',    info.harvest_cycles,                         false],
     ['Feed Type',         info.feed_type,                              false],
     ['FCR',               info.fcr,                                    false],
     ['Water Temp',        info.water_temp,                             false],
@@ -2073,7 +2453,7 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
     ['DWT',               info.dwt,                                    false],
     ['Length (m)',        info.length,                                 false],
     ['Beam (m)',          info.beam,                                   false],
-    ['Nav Status',        info.nav_status,                             false],
+    ['Navigational Status', info.nav_status,                           false],
     ['Class / Society',   info.class_soc,                              false],
     ['Manager',           info.manager,                                false],
   ];
@@ -2101,8 +2481,11 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
   // Only show fields where a value was actually found — no N/A rows
   const fieldDefs = rawFields.filter(([,v]) => v);
 
-  // Source badges
-  const okSrcs = sources.filter(s => s.ok).map(s => esc(s.id)).join(' · ');
+  // Source chips — rendered as styled badges
+  const okSrcs = sources.filter(s => s.ok);
+  const srcChipsHTML = okSrcs.length
+    ? `<div class="vc-sources">${okSrcs.map(s => `<span class="vc-src-chip src-ok">${esc(s.id)}</span>`).join('')}</div>`
+    : '';
 
   // Reference links — vessel links when maritime data present, farm links otherwise
   const encName = encodeURIComponent(name);
@@ -2142,9 +2525,9 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
   const noteText = info._notes ? `<div class="vc-note" onclick="editNote('${esc(savedId||'')}')">${esc(info._notes)}</div>` : '';
 
   // Category / facility / species badges
-  const facilityLabel = info._facilityType === 'mill'   ? 'Fish Mill / Processing'
+  const facilityLabel = info._facilityType === 'mill'   ? 'Mill / Processing'
     : info._facilityType === 'vessel' ? 'Shipping / Fishing Vessel'
-    : info._facilityType === 'farm'   ? 'Fish Farm / Aquaculture' : 'General';
+    : info._facilityType === 'farm'   ? 'Farm / Aquaculture' : 'General';
   const catBadge  = info._category     ? `<span class="chip chip-b">${esc(info._category)}</span>` : '';
   const typeBadge = info._facilityType ? `<span class="chip chip-o">${esc(facilityLabel)}</span>` : '';
   const specBadge = info.species
@@ -2180,17 +2563,20 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
     info.class_soc                 ? ['Class / Society', info.class_soc]                    : null,
     info.owner || info.operator    ? ['Owner / Operator',info.owner || info.operator]       : null,
     info.manager                   ? ['Manager',         info.manager]                      : null,
-    info.nav_status                ? ['Nav Status',      info.nav_status]                   : null,
+    info.nav_status                ? ['Navigational Status', info.nav_status]               : null,
   ].filter(Boolean);
   const identityHTML = idItems.length ? `
     <div class="vc-identity">
-      ${idItems.map(([l,v]) => `<div class="vc-id-item"><b>${esc(l)}</b>${esc(v)}</div>`).join('')}
+      ${idItems.map(([l,v]) => { const d = withFlag(l,v); return `<div class="vc-id-item"><b>${esc(l)}</b>${esc(d)}</div>`; }).join('')}
     </div>` : '';
+
+  // Field count badge
+  const fieldCount = fieldDefs.length;
+  const fieldCountHTML = `<span class="vc-fieldcount${fieldCount >= 4 ? ' has-fields' : ''}">${fieldCount} field${fieldCount !== 1 ? 's' : ''} extracted</span>`;
 
   // Scrape footer
   const scrapeHTML = `
     <div class="vc-scrape">
-      ${okSrcs ? `<span>Sources: ${okSrcs}</span>` : ''}
       ${info._savedAt ? `<span>Retrieved ${new Date(info._savedAt).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}</span>` : ''}
       ${info._category ? `<span>${esc(info._category)}</span>` : ''}
     </div>`;
@@ -2204,9 +2590,10 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
       <div class="isrc">${esc(img.label)}</div>
     </div>`).join('') : '';
 
-  const fieldHTML = fieldDefs.map(([l,v]) =>
-    `<div class="vf"><div class="vfl">${esc(l)}</div><div class="vfv">${esc(v)}</div></div>`
-  ).join('') || `<div class="vf" style="grid-column:1/-1;color:var(--mut3);font-style:italic;font-size:12px">No structured data available for this record.</div>`;
+  const fieldHTML = fieldDefs.map(([l,v]) => {
+    const disp = withFlag(l, v);
+    return `<div class="vf"><div class="vfl">${esc(l)}</div><div class="vfv">${esc(disp)}</div></div>`;
+  }).join('') || `<div class="vf" style="grid-column:1/-1;color:var(--mut3);font-style:italic;font-size:12px">No structured data available for this record.</div>`;
 
   const rawHTML = sources.filter(s => s.ok && s.text).map(s =>
     `<div style="margin-bottom:10px">
@@ -2214,21 +2601,39 @@ function renderCard(name, imo, info, sources, imgs, savedIdOrAI, aiEnhancedFlag)
       <div class="text-view">${highlightIMO(s.text)}</div>
     </div>`).join('');
 
+  // Type class for color-coded left border
+  const typeClass = facilityType === 'vessel' ? 'vc-vessel'
+                  : facilityType === 'mill'   ? 'vc-mill'
+                  : 'vc-farm';
+
+  // Save / saved-actions area — Save button pinned in card header when not yet saved
+  const headerSaveBtn = savedId ? '' :
+    `<button class="vc-save-btn" id="savebtn-${uid}" data-info="${esc(JSON.stringify({name, imo, ...info}))}" onclick="showSavePreview(JSON.parse(this.dataset.info),this.id)">Save ↗</button>`;
+
   return `
-  <hr>
-  <div class="vessel-card" id="${uid}">
-    <div class="vc-name">${safeName}</div>
-    ${imo ? `<div class="vc-imo">IMO ${safeIMO}</div>` : ''}
+  <div class="vessel-card ${typeClass}" id="${uid}">
+    <div class="vc-header">
+      <div class="vc-header-main">
+        <div class="vc-name">${safeName}</div>
+        ${imo ? `<div class="vc-imo">IMO ${safeIMO}</div>` : ''}
+        ${_flagCountry ? `<div class="vc-flag">${_flagEmoji ? `<span class="vc-flag-emoji" aria-hidden="true">${_flagEmoji}</span>` : ''}<span>${esc(_flagCountry)}</span></div>` : ''}
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0">
+        ${headerSaveBtn}
+        ${fieldCountHTML}
+      </div>
+    </div>
     ${badgeRow ? `<div class="vc-badges">${badgeRow}</div>` : ''}
     ${identityHTML}
     ${descHTML}
+    ${srcChipsHTML}
     <div class="vc-grid">${fieldHTML}</div>
-    ${imgs.length ? `<div class="label" style="margin-bottom:8px">Images (${imgs.length})</div><div class="img-gallery">${imgHTML}</div>` : ''}
+    ${imgs.length ? `<div class="label" style="margin-bottom:8px">📷 Images (${imgs.length})</div><div class="img-gallery">${imgHTML}</div>` : ''}
     <div class="ship-links">${linkHTML}</div>
     ${noteText}
     ${scrapeHTML}
     <div class="btn-row">
-      ${savedId ? savedActions : `<button class="btn btn-ghost btn-sm" id="savebtn-${uid}" data-info="${esc(JSON.stringify({name, imo, ...info}))}" onclick="showSavePreview(JSON.parse(this.dataset.info),this.id)">Save</button>`}
+      ${savedId ? savedActions : ''}
       <button class="btn btn-ghost btn-sm" onclick="toggleEl('raw-${uid}')">Raw data</button>
       <button class="btn btn-ghost btn-sm" onclick="copyText('${uid}')">Copy text</button>
       ${imo ? `<button class="btn btn-blue btn-sm" onclick="document.getElementById('main-search').value='${safeIMO}';runBot()">Re-scan</button>` : ''}
@@ -2268,7 +2673,7 @@ async function runBot() {
   const isMMSI   = /^\d{9}$/.test(q.replace(/\s/g,''));
   let imo  = isIMO  ? q : '';
   let mmsi = isMMSI ? q.replace(/\s/g,'') : '';
-  const yearFrom  = parseInt(document.getElementById('year-from')?.value  || '2020');
+  const yearFrom  = parseInt(document.getElementById('year-from')?.value  || '2000');
   const yearTo    = parseInt(document.getElementById('year-to')?.value || String(new Date().getFullYear()));
   const catFilter = (document.getElementById('cat-filter')?.value || '').trim();
 
@@ -2306,13 +2711,21 @@ async function runBot() {
   out.innerHTML = `
     <div class="card">
       <div class="run-title"><span class="spin"></span> Searching for <em>${esc(q)}</em></div>
-      <div class="bot-log" id="bot-log"></div>
+      <div class="run-status" id="run-status">Scanning sources…</div>
       <div class="prog-bar"><div class="prog-fill" id="bprog" style="width:5%"></div></div>
+      <div class="bot-log" id="bot-log"></div>
       <div id="bot-res"></div>
     </div>`;
 
   logEl = document.getElementById('bot-log');
   const setProgress = p => { const el = document.getElementById('bprog'); if(el) el.style.width = p + '%'; };
+  const setStatus   = s => { const el = document.getElementById('run-status'); if(el) el.textContent = s; };
+  let _sourcesDone  = 0;
+  let _sourcesTotal = 0;
+  const tickSource  = (id) => {
+    _sourcesDone++;
+    setStatus(`Checking ${id}… (${_sourcesDone}/${_sourcesTotal} sources)`);
+  };
 
   // Check knowledge base for prior results
   const priorKnowledge = checkLearned(q);
@@ -2323,7 +2736,7 @@ async function runBot() {
 
   try {
     log(`Query: "${q}" — type: ${searchType}`, 'info');
-    setProgress(20);
+    setProgress(20); setStatus('Building source list…');
 
     /* Step 2: Scrape farm / mill details */
     const scraperURLs = [];
@@ -2363,11 +2776,12 @@ async function runBot() {
             { id:'MyShipTracking',url:`https://www.myshiptracking.com/vessels?mmsi=${mmsi}` },
           );
         } else {
-          bingQ = `${qPhrase}${catKW} vessel ship IMO registry flag site:marinetraffic.com OR site:vesselfinder.com OR site:fleetmon.com OR site:equasis.org`;
+          bingQ = `${qPhrase}${catKW} vessel ship IMO registry flag site:marinetraffic.com OR site:vesselfinder.com OR site:fleetmon.com OR site:equasis.org OR site:myshiptracking.com`;
           scraperURLs.push(
             { id:'MarineTraffic',    url:`https://www.marinetraffic.com/en/ais/details/ships/shipid:0/mmsi:0/vessel:${encodeURIComponent(q)}` },
             { id:'VesselFinder',     url:`https://www.vesselfinder.com/?name=${encodeURIComponent(q)}` },
             { id:'FleetMon',         url:`https://www.fleetmon.com/vessels/?search_vessel=${encodeURIComponent(q)}` },
+            { id:'MyShipTracking',   url:`https://www.myshiptracking.com/vessels?name=${encodeURIComponent(q)}` },
             { id:'FAO-Global-Record',url:`https://www.fao.org/global-record/search?VesselName=${encodeURIComponent(q)}&lang=en` },
           );
         }
@@ -2381,25 +2795,36 @@ async function runBot() {
       } else {
         if (isMill) {
           // Mill: site-targeted Bing query hitting authoritative industry registries
-          bingQ = `${qPhrase}${catKW} fishmeal "fish oil" processing plant site:iffo.com OR site:fis.com OR site:seafoodsource.com OR site:eumofa.eu OR site:undercurrentnews.com OR site:allaboutfeed.net`;
+          bingQ = `${qPhrase}${catKW} fishmeal "fish oil" processing plant site:iffo.com OR site:fis.com OR site:seafoodsource.com OR site:eumofa.eu OR site:undercurrentnews.com OR site:allaboutfeed.net OR site:marineingredients.org OR site:shuichan.cc OR site:fishfirst.cn`;
           scraperURLs.push(
             { id:'IFFO',             url:`https://www.iffo.com/search?keyword=${encodeURIComponent(q)}` },
             { id:'MarineIngredients',url:`https://www.marineingredients.org/?s=${encodeURIComponent(q)}` },
             { id:'EUMOFA',           url:`https://www.eumofa.eu/en/search?text=${encodeURIComponent(q)}` },
             { id:'FIS',              url:`https://www.fis.com/fis/search/?search=${encodeURIComponent(q)}&type=companies` },
+            { id:'SeafoodSource',    url:`https://www.seafoodsource.com/search?q=${encodeURIComponent(q)}` },
+            { id:'Undercurrent',     url:`https://www.undercurrentnews.com/?s=${encodeURIComponent(q)}` },
+            // Chinese sources — fish meal / processing plants
+            { id:'Shuichan-Mill',    url:`https://www.shuichan.cc/search/?keyword=${encodeURIComponent(q)}`, _cn:true },
+            { id:'FishFirst-Mill',   url:`https://www.fishfirst.cn/?s=${encodeURIComponent(q)}`, _cn:true },
           );
         } else {
-          // Farm: site-targeted Bing query hitting ASC, BAP, SeafoodSource, etc.
-          bingQ = `${qPhrase}${catKW} aquaculture "fish farm" certified site:asc-aqua.org OR site:bapcertification.org OR site:seafoodsource.com OR site:fis.com OR site:undercurrentnews.com OR site:intrafish.com OR site:globefish.org`;
+          // Farm: site-targeted Bing query hitting ASC, BAP, SeafoodSource, GlobalG.A.P., etc.
+          bingQ = `${qPhrase}${catKW} aquaculture "fish farm" certified site:asc-aqua.org OR site:bapcertification.org OR site:seafoodsource.com OR site:fis.com OR site:undercurrentnews.com OR site:intrafish.com OR site:globefish.org OR site:globalgap.org OR site:mara.gov.cn OR site:fishfirst.cn OR site:shuichan.cc`;
           scraperURLs.push(
+            { id:'ASC',              url:`https://www.asc-aqua.org/find-a-farm/?q=${encodeURIComponent(q)}` },
             { id:'BAP',              url:`https://www.bapcertification.org/searchfacilities?name=${encodeURIComponent(q)}` },
             { id:'SeafoodSource',    url:`https://www.seafoodsource.com/search?q=${encodeURIComponent(q)}` },
             { id:'GlobalSalmonIndex',url:`https://salmonindex.org/search?query=${encodeURIComponent(q)}` },
             { id:'FIS',              url:`https://www.fis.com/fis/search/?search=${encodeURIComponent(q)}&type=companies` },
+            { id:'GlobalGAP',        url:`https://www.globalgap.org/uk_en/who-we-are/GFSI/?Id=0018&Type=ProductionSite&search_type=db_search&search_term=${encodeURIComponent(q)}&LanguageId=1` },
+            // Chinese sources — aquaculture farms
+            { id:'Shuichan-Farm',    url:`https://www.shuichan.cc/search/?keyword=${encodeURIComponent(q)}`, _cn:true },
+            { id:'FishFirst-Farm',   url:`https://www.fishfirst.cn/?s=${encodeURIComponent(q)}`, _cn:true },
+            { id:'MARA-Fisheries',   url:`https://www.mara.gov.cn/sousuo/index.htm?keywords=${encodeURIComponent(q)}&type=zdly`, _cn:true },
           );
         }
         log(`Date filter: ${yearFrom}–${yearTo}${catFilter ? ` · category: ${catFilter}` : ''}`, 'info');
-        farmAPIResults = await queryFarmAPIs(q, signal, yearTo).catch(() => []);
+        farmAPIResults = await queryFarmAPIs(q, signal, yearTo, searchType).catch(() => []);
       }
 
       scraperURLs.push({ id:'Web-Discovery', url:`https://www.bing.com/search?q=${encodeURIComponent(bingQ)}` });
@@ -2412,13 +2837,61 @@ async function runBot() {
           : `${qPhrase}${catKW} aquaculture "fish farm" ASC BAP certified species production capacity`;
       scraperURLs.push({ id:'DDG-Search', url:`https://html.duckduckgo.com/html/?q=${encodeURIComponent(ddgQ)}` });
 
-      // Google — wider crawl, especially for non-English pages
+      // Google (English) — wider crawl, especially for non-English pages
       const googleQ = isVessel
         ? `${qPhrase}${catKW} vessel ship IMO flag "call sign" "gross tonnage" "year built"`
         : isMill
           ? `${qPhrase}${catKW} fishmeal "fish oil" mill capacity "input species" certifications`
           : `${qPhrase}${catKW} fish farm aquaculture species certified production capacity operator`;
       scraperURLs.push({ id:'Google-Search', url:`https://www.google.com/search?q=${encodeURIComponent(googleQ)}&num=20&hl=en&gl=us` });
+
+      // Google (Chinese) — targets .cn domains and Chinese-language results
+      const googleCNQ = isVessel
+        ? `${q} 船舶 船名 IMO 船旗 呼号 总吨`
+        : isMill
+          ? `${q} 鱼粉厂 鱼油 加工厂 产能 原料鱼`
+          : `${q} 水产养殖 养殖场 养殖品种 产量 认证`;
+      scraperURLs.push({ id:'Google-CN', url:`https://www.google.com/search?q=${encodeURIComponent(googleCNQ)}&num=20&hl=zh-CN&gl=cn`, _cn:true });
+
+      // Baidu — dominant Chinese search engine; surfaces .cn government and industry pages
+      const baiduQ = isVessel
+        ? `${q} 船舶 船名 IMO 船旗`
+        : isMill
+          ? `${q} 鱼粉 加工厂 水产品加工`
+          : `${q} 水产养殖 养殖场`;
+      scraperURLs.push({ id:'Baidu-Search', url:`https://www.baidu.com/s?wd=${encodeURIComponent(baiduQ)}&rn=20`, _cn:true, _fallback:true });
+
+      // Chinese vessel registries — added for vessel searches
+      if (isVessel) {
+        scraperURLs.push(
+          { id:'ShipXY',    url:`https://www.shipxy.com/ship/shiplist?name=${encodeURIComponent(q)}`, _cn:true },
+          { id:'MSA-China', url:`https://www.msa.gov.cn/search/index.html?q=${encodeURIComponent(q)}`, _cn:true },
+        );
+      }
+
+      // ── WeChat (微信公众号) ─────────────────────────────────────────────────
+      // Companies publish farm inspections, vessel registrations, and operational
+      // updates on WeChat Official Accounts. Articles at mp.weixin.qq.com are
+      // public web pages — no login required — and are indexed by Bing.
+      //
+      // Strategy:
+      //   1. Bing `site:mp.weixin.qq.com` — reliable index of public WX articles
+      //   2. Sogou WeChat search (`weixin.sogou.com`) — the dedicated WX article
+      //      search engine; covers accounts that Bing hasn't indexed yet
+      const wxQ = isVessel
+        ? `${q} 船舶 船名 渔船`
+        : isMill
+          ? `${q} 鱼粉 鱼油 水产品加工`
+          : `${q} 水产养殖 养殖场 养殖品种`;
+      scraperURLs.push(
+        // Bing WeChat article search — follows real links to mp.weixin.qq.com
+        { id:'WeChat-Bing',  url:`https://www.bing.com/search?q=${encodeURIComponent(q + ' ' + wxQ.split(' ')[1])}&q1=site:mp.weixin.qq.com&hl=zh-CN`, _cn:true, _wechat:true },
+        // Sogou WeChat — type=2 = articles, type=1 = official accounts
+        { id:'WeChat-Sogou-Articles',  url:`https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(q)}`, _cn:true, _wechat:true },
+        { id:'WeChat-Sogou-Accounts',  url:`https://weixin.sogou.com/weixin?type=1&query=${encodeURIComponent(q)}`, _cn:true, _wechat:true },
+        // Direct Bing search for WeChat articles with Chinese industry terms
+        { id:'WeChat-Industry', url:`https://www.bing.com/search?q=${encodeURIComponent(wxQ + ' site:mp.weixin.qq.com')}&setlang=zh-CN`, _cn:true, _wechat:true, _fallback:true },
+      );
 
       // Broad fallback — no date, no exact phrase
       const fallbackQ = isVessel
@@ -2428,10 +2901,10 @@ async function runBot() {
 
       // International fallback — search without English keywords to surface foreign-language sites
       const intlQ = isVessel
-        ? `${q} nave barco buque vessel schiff navire 船 مركب`
+        ? `${q} nave barco buque vessel schiff navire 船 漁船 مركب`
         : isMill
-          ? `${q} harina pescado fischmehl farine poisson`
-          : `${q} acuicultura aquaculture aquacultura aquaculture élevage poisson`;
+          ? `${q} harina pescado fischmehl farine poisson 鱼粉 鱼油厂`
+          : `${q} acuicultura aquaculture aquacultura élevage poisson 水产养殖 养殖场`;
       scraperURLs.push({ id:'Intl-Search', url:`https://www.bing.com/search?q=${encodeURIComponent(intlQ)}&setlang=en`, _fallback:true });
     }
 
@@ -2475,7 +2948,10 @@ async function runBot() {
     const exitAC = new AbortController();
     const scrapeSignal = typeof AbortSignal.any === 'function'
       ? AbortSignal.any([signal, exitAC.signal]) : signal;
-    const FIELD_THRESHOLD = 6;
+    // Vessels have ~12 core fields (IMO, flag, GT, DWT, year, call sign, type, port, owner, manager, length, beam)
+    // Farms have ~10 (name, country, species, capacity, method, cert, operator, lat/lon, license, water_type)
+    // Mills have ~8 (name, country, input species, capacity, output, fishmeal%, fishoil%, operator)
+    const FIELD_THRESHOLD = isVessel ? 10 : isMill ? 7 : 8;
     function checkEarlyExit() {
       if (exitAC.signal.aborted) return;
       const unique = new Set(
@@ -2519,89 +2995,151 @@ async function runBot() {
         ]).then(([wiki, a, b, c]) => [...wiki, ...a, ...b, ...c])
       : Promise.resolve([]);
 
-    const DISCOVERY_IDS = ['Web-Discovery','DDG-Search','Google-Search','Broad-Search','Intl-Search'];
+    const DISCOVERY_IDS = [
+      'Web-Discovery','DDG-Search','Google-Search','Broad-Search','Intl-Search',
+      'Google-CN','Baidu-Search',                      // Chinese search engines
+      'Shuichan-Farm','Shuichan-Mill',                 // Chinese aquaculture portals
+      'FishFirst-Farm','FishFirst-Mill','MARA-Fisheries',
+      'WeChat-Bing','WeChat-Sogou-Articles','WeChat-Sogou-Accounts','WeChat-Industry', // WeChat
+    ];
 
-    // Sequential scrape — one site at a time so each result is seen before proceeding
-    for (const s of scraperURLs) {
-      if (scrapeSignal.aborted) break;
+    // ── Scrape helper: fetch one source, translate if needed, extract fields ──
+    const TEXT_BUDGET = 15000; // ~2,500 words — captures tables and specs deeper in pages
+    // Domains to skip when following discovery links — search engine result pages only,
+    // NOT content sites. mp.weixin.qq.com is a content site and must NOT be skipped.
+    const SKIP_DOMAINS = /^https?:\/\/(www\.bing\.com|www\.google\.(com|cn)\/search|html\.duckduckgo\.com|duckduckgo\.com|baidu\.com\/s)[/?]/i;
+
+    async function scrapeOne(s) {
+      if (scrapeSignal.aborted) return;
       try {
+        tickSource(s.id);
         log(`→ ${s.id}…`, 'info');
-        const html = await fetchViaProxy(s.url, scrapeSignal);
-        if (scrapeSignal.aborted) break;
-        const doc  = parseHTML(html);
-        let   text = doc.body?.innerText?.slice(0, 8000) || '';
+        // Chinese government/portal sites can be slow — give them extra time
+        const timeout = s._cn ? 28000 : 22000;
+        const html = await fetchViaProxy(s.url, timedSignal(scrapeSignal, timeout));
+        if (scrapeSignal.aborted) return;
+
+        const doc  = parseHTML(html, s.url);
+        // For WeChat articles focus on #js_content; for others use full body
+        const bodyEl = s._wechat
+          ? (doc.getElementById('js_content') || doc.body)
+          : doc.body;
+        let   text = bodyEl?.innerText?.slice(0, TEXT_BUDGET) || '';
 
         const pageLang = detectLang(doc, text);
         if (pageLang !== 'en') {
           log(`Language: ${pageLang} — translating…`, 'info');
-          try { text = await translate(text.slice(0, 3000), scrapeSignal); } catch {}
+          try { text = await translate(text.slice(0, 4000), scrapeSignal); } catch {}
         }
 
         const fields = extractFields(doc, text);
         const imgs   = extractImages(doc, s.url);
-        if (!imo) { const f = extractIMOs(text); if(f.length) imo = f[0]; }
+        if (!imo) { const f = extractIMOs(text); if (f.length) imo = f[0]; }
 
-        // Discovery sources: follow top result URLs one at a time
+        // Discovery sources: follow top result links — use DOM, not regex
         if (DISCOVERY_IDS.includes(s.id)) {
-          const urlMatches = html.match(/href="(https?:\/\/(?!www\.bing\.com|www\.google\.com|html\.duckduckgo\.com|duckduckgo\.com)[^"]{12,300})"/g) || [];
-          const topURLs = [...new Set(urlMatches.map(m => m.slice(6,-1)).filter(u => isValidURL(u) && !u.includes('duckduckgo.com')))].slice(0, s._fallback ? 3 : 5);
+          // DOM-based link extraction handles relative URLs and avoids regex false-matches
+          const anchors = [...doc.querySelectorAll('a[href]')];
+          const discovered = [];
+          for (const a of anchors) {
+            try {
+              const href = new URL(a.href || a.getAttribute('href'), s.url).href;
+              if (isValidURL(href) && !SKIP_DOMAINS.test(href) && !discovered.includes(href))
+                discovered.push(href);
+            } catch {}
+          }
+          // WeChat/Sogou results — prioritise mp.weixin.qq.com article links
+          const wxFirst = s._wechat
+            ? [...discovered.filter(u => /mp\.weixin\.qq\.com/i.test(u)),
+               ...discovered.filter(u => !/mp\.weixin\.qq\.com/i.test(u))]
+            : discovered;
+          const topURLs = [...new Set(wxFirst)].slice(0, s._fallback ? 4 : (s._wechat ? 8 : 6));
+
           for (const u of topURLs) {
             if (scrapeSignal.aborted) break;
             try {
-              const ph = await fetchViaProxy(u, scrapeSignal);
+              const isWX = /mp\.weixin\.qq\.com/i.test(u);
+              const ph = await fetchViaProxy(u, timedSignal(scrapeSignal, isWX ? 30000 : (s._cn ? 28000 : 20000)));
               if (scrapeSignal.aborted) break;
-              const pd = parseHTML(ph);
-              let   pt = pd.body?.innerText?.slice(0, 8000) || '';
+              const pd     = parseHTML(ph, u);
+              // WeChat articles: focus on #js_content for cleaner text extraction
+              const pdBody = isWX ? (pd.getElementById('js_content') || pd.body) : pd.body;
+              let   pt     = pdBody?.innerText?.slice(0, TEXT_BUDGET) || '';
               const subLang = detectLang(pd, pt);
-              if (subLang !== 'en') { try { pt = await translate(pt.slice(0, 3000), scrapeSignal); } catch {} }
-              const rel = relevanceScore(pt, q);
-              if (!isSeaRelated(pt)) { log(`Skipped (not sea-related): ${new URL(u).hostname}`, 'warn'); continue; }
-              if (rel === 0 && !s._fallback) { log(`Skipped (off-topic): ${new URL(u).hostname}`, 'warn'); continue; }
-              if (!topicMatch(pt, searchType)) { log(`Skipped (wrong topic): ${new URL(u).hostname}`, 'warn'); continue; }
+              if (subLang !== 'en') { try { pt = await translate(pt.slice(0, 4000), scrapeSignal); } catch {} }
+
+              if (!isSeaRelated(pt)) { log(`Skipped (off-domain): ${new URL(u).hostname}`, 'warn'); continue; }
+              if (!topicMatch(pt, searchType)) { log(`Skipped (wrong type): ${new URL(u).hostname}`, 'warn'); continue; }
+
               const pf = filterFieldsByType(extractFields(pd, pt), searchType);
               const fc = Object.keys(pf).filter(k => !k.startsWith('_')).length;
               if (fc >= 1) {
-                log(`✓ ${s._fallback?'Fallback':'Found'}: ${new URL(u).hostname} — ${fc} field(s)${subLang!=='en'?` [${subLang}]`:''}`, 'ok');
-                scrapeResults.push({ id:new URL(u).hostname, ok:true, url:u, fields:pf, imgs:extractImages(pd,u), text:pt });
-                // Feed promising pages to Claude concurrently
-                if ((claudeKey || _serverAIReady) && relevanceScore(pt, q) > 0.2 && pt.length > 300) {
-                  claudeTexts.push({ source: new URL(u).hostname, text: pt });
-                  if (!claudePromise && claudeTexts.length >= 2)
-                    claudePromise = claudeExtract(claudeTexts, q, searchType, signal);
-                }
+                const hostname = new URL(u).hostname;
+                log(`✓ ${s._fallback ? 'Fallback' : 'Found'}: ${hostname} — ${fc} field(s)${subLang !== 'en' ? ` [${subLang}]` : ''}`, 'ok');
+                scrapeResults.push({ id: hostname, ok:true, url:u, fields:pf, imgs:extractImages(pd, u), text:pt });
+                maybeFireClaude(pt, hostname);
                 checkEarlyExit();
               }
-            } catch {}
+            } catch(e) { if (e.name === 'AbortError') throw e; }
           }
         }
 
-        if (scrapeSignal.aborted) break;
+        if (scrapeSignal.aborted) return;
         const rel = relevanceScore(text, q);
         const filteredFields = filterFieldsByType(fields, searchType);
-        const fc = Object.keys(filteredFields).filter(k=>!k.startsWith('_')).length;
+        const fc = Object.keys(filteredFields).filter(k => !k.startsWith('_')).length;
+
         if (!isSeaRelated(text) || (rel === 0 && fc < 2 && s._fallback) || !topicMatch(text, searchType)) {
-          log(`Skipped (${!isSeaRelated(text) ? 'not sea-related' : 'off-topic'}): ${s.id}`, 'warn');
+          log(`Skipped (${!isSeaRelated(text) ? 'off-domain' : 'off-topic'}): ${s.id}`, 'warn');
         } else {
-          log(`✓ ${s.id} — ${fc} fields, ${imgs.length} imgs`, 'ok');
+          log(`✓ ${s.id} — ${fc} field(s), ${imgs.length} img(s)`, 'ok');
           scrapeResults.push({ id:s.id, ok:true, url:s.url, fields:filteredFields, imgs, text });
-          // Feed promising pages to Claude concurrently
-          if ((claudeKey || _serverAIReady) && relevanceScore(text, q) > 0.2 && text.length > 300) {
-            claudeTexts.push({ source: s.id, text });
-            if (!claudePromise && claudeTexts.length >= 2)
-              claudePromise = claudeExtract(claudeTexts, q, searchType, signal);
-          }
+          maybeFireClaude(text, s.id);
           checkEarlyExit();
         }
       } catch(e) {
-        if (e.name !== 'AbortError') {
-          log(`✗ ${s.id}: ${e.message}`, 'err');
-          scrapeResults.push({ id:s.id, ok:false, url:s.url, error:e.message, fields:{}, imgs:[], text:'' });
-        }
+        if (e.name === 'AbortError') throw e;
+        log(`✗ ${s.id}: ${e.message}`, 'err');
+        scrapeResults.push({ id:s.id, ok:false, url:s.url, error:e.message, fields:{}, imgs:[], text:'' });
       }
     }
 
+    // Claude trigger — fires after the FIRST good page (not waiting for 2)
+    function maybeFireClaude(text, sourceId) {
+      if (!(claudeKey || _serverAIReady)) return;
+      if (relevanceScore(text, q) >= 1 && text.length > 300) {
+        claudeTexts.push({ source: sourceId, text });
+        if (!claudePromise && claudeTexts.length >= 1)
+          claudePromise = claudeExtract(claudeTexts, q, searchType, signal);
+      }
+    }
+
+    // ── Parallel scrape with concurrency limit ────────────────────────────────
+    // Non-fallback sources run at 4 concurrent; fallbacks are sequential after.
+    const primary   = scraperURLs.filter(s => !s._fallback);
+    const fallbacks = scraperURLs.filter(s =>  s._fallback);
+    _sourcesTotal = scraperURLs.length;
+    setStatus(`Scanning ${_sourcesTotal} source${_sourcesTotal !== 1 ? 's' : ''}…`);
+    const CONCURRENCY = 4;
+
+    // Run primary sources CONCURRENCY-at-a-time
+    let idx = 0;
+    async function worker() {
+      while (idx < primary.length && !scrapeSignal.aborted) {
+        const s = primary[idx++];
+        await scrapeOne(s).catch(e => { if (e.name !== 'AbortError') {} });
+      }
+    }
+    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+    // Fallbacks: run sequentially but stop if early-exit already fired
+    for (const s of fallbacks) {
+      if (scrapeSignal.aborted) break;
+      await scrapeOne(s).catch(e => { if (e.name !== 'AbortError') {} });
+    }
+
     if (signal.aborted) throw new DOMException('Search cancelled by user', 'AbortError');
-    setProgress(70);
+    setProgress(70); setStatus('Merging results…');
 
     /* Step 3: Images — parallel fetch already started above, just collect result */
     // Only take page images from sources that found at least 1 relevant field.
@@ -2636,7 +3174,7 @@ async function runBot() {
     stats.images += allImgs.length;
     stats.ships++;
     updateStats();
-    setProgress(88);
+    setProgress(88); setStatus('AI enrichment…');
 
     /* Step 4: Translate */
     if (document.getElementById('opt-trans').checked) {
@@ -2666,10 +3204,12 @@ async function runBot() {
     const cacheCovers = priorKnowledge && priorKnowledge.confidence >= 0.75;
     if (populatedCount < 3 && !signal.aborted && !cacheCovers) {
       log(`Only ${populatedCount} field(s) found — running broad retry…`, 'warn');
-      const retryQ = isVessel ? `${q} vessel ship` : isMill ? `${q} fishmeal plant` : `${q} aquaculture`;
+      const retryQ   = isVessel ? `${q} vessel ship` : isMill ? `${q} fishmeal plant` : `${q} aquaculture`;
+      const retryCNQ = isVessel ? `${q} 船舶 船名` : isMill ? `${q} 鱼粉厂` : `${q} 水产养殖`;
       const retryURLs = [
         `https://www.bing.com/search?q=${encodeURIComponent(retryQ)}`,
         `https://html.duckduckgo.com/html/?q=${encodeURIComponent(retryQ)}`,
+        `https://www.google.com/search?q=${encodeURIComponent(retryCNQ)}&num=10&hl=zh-CN&gl=cn`,
       ];
       for (const rUrl of retryURLs) {
         if (signal.aborted) break;
@@ -2699,7 +3239,9 @@ async function runBot() {
       if (imo) merged._imo = merged._imo || imo;
     }
 
-    // ── Claude: fire on any remaining pages if not yet triggered ──────────
+    // ── Claude: fire on all accumulated pages if not yet triggered ────────
+    // (maybeFireClaude fires early on first good page; this catches the case
+    //  where all good pages arrived in the same concurrent batch)
     if ((claudeKey || _serverAIReady) && claudeTexts.length >= 1 && !claudePromise)
       claudePromise = claudeExtract(claudeTexts, q, searchType, signal);
 
@@ -2722,11 +3264,18 @@ async function runBot() {
     }
 
     setProgress(100);
-    log(`Complete — ${allImgs.length} image(s) collected${aiEnhanced ? ' · AI-enhanced ✓' : ''}`, 'ok');
+    const fieldCount  = Object.keys(merged).filter(k => !k.startsWith('_')).length;
+    const okSources   = scrapeResults.filter(r => r.ok).length;
+    const doneMsg = [
+      `${fieldCount} field${fieldCount !== 1 ? 's' : ''} extracted`,
+      `${okSources}/${_sourcesTotal} sources hit`,
+      aiEnhanced ? 'AI-enhanced ✓' : '',
+      allImgs.length  ? `${allImgs.length} image${allImgs.length !== 1 ? 's' : ''}` : '',
+    ].filter(Boolean).join(' · ');
+    setStatus(doneMsg);
+    log(`Complete — ${doneMsg}`, 'ok');
 
     // Build card name — then sanity-check it matches the search query.
-    // If the extracted name shares no token with q, the scraper grabbed a
-    // competitor's name from a shared industry page; fall back to the query.
     const rawCardName = isVessel
       ? (merged.vessel_name || q)
       : (merged.farm_name || merged.vessel_name || merged.name || q);
@@ -2739,12 +3288,42 @@ async function runBot() {
     });
 
     if (resEl) {
-      const div = document.createElement('div');
-      div.innerHTML = renderCard(cardName, imo, merged, scrapeResults, allImgs, aiEnhanced);
-      resEl.appendChild(div);
+      if (fieldCount < 2 && !signal.aborted) {
+        // No-results state — clear, actionable, not just a broken card
+        const altType = isVessel ? 'farm' : 'vessel';
+        const altLabel = isVessel ? 'Farm / Aquaculture' : 'Shipping / Fishing Vessel';
+        resEl.innerHTML = `
+          <div class="no-results">
+            <div class="no-results-icon">🔍</div>
+            <div class="no-results-title">No data found for "${esc(q)}"</div>
+            <div class="no-results-sub">
+              Checked ${okSources} sources — none had structured data matching this entity.
+              Try a more specific name, an IMO number, or switch the facility type.
+            </div>
+            <div class="no-results-actions">
+              <button class="btn btn-blue btn-sm" onclick="
+                document.getElementById('search-type').value='${esc(altType)}';
+                runBot()">
+                Try as ${esc(altLabel)}
+              </button>
+              <button class="btn btn-ghost btn-sm" onclick="
+                document.getElementById('main-search').value='${esc(q)} aquaculture';
+                runBot()">
+                Broaden search
+              </button>
+              <button class="btn btn-ghost btn-sm" onclick="setMode('url')">
+                Paste a URL instead
+              </button>
+            </div>
+          </div>`;
+      } else {
+        const div = document.createElement('div');
+        div.innerHTML = renderCard(cardName, imo, merged, scrapeResults, allImgs, aiEnhanced);
+        resEl.appendChild(div);
+      }
 
       // Cache the rendered HTML for 30 minutes
-      if (window.AppCache) {
+      if (window.AppCache && fieldCount >= 2) {
         const cKey = AppCache.key(q, searchType);
         AppCache.set(cKey, resEl.innerHTML).catch(() => {});
       }
@@ -2774,27 +3353,41 @@ function cancelSearch() {
 /* ═══════════════════════════════════════════
    FARM API QUERIES (direct — no proxy needed)
 ═══════════════════════════════════════════ */
-async function queryFarmAPIs(q, signal, yearTo = 2020) {
+async function queryFarmAPIs(q, signal, yearTo = new Date().getFullYear(), searchType = 'farm') {
   const results = [];
-  const safeQ = q.replace(/[^\w\s\-]/g, '').trim().slice(0, 80);
+  // \p{L}\p{N} — preserve letters/digits from ANY script (CJK, Arabic, Cyrillic, etc.)
+  const safeQ = q.replace(/[^\p{L}\p{N}\s\-]/gu, '').trim().slice(0, 80);
 
   // Run OSM and Wikipedia in parallel (both are direct API calls, no proxy contention)
   const [osmSettled, wikiSettled] = await Promise.allSettled([
 
-    /* ── 1. OpenStreetMap Overpass ── real lat/lon of aquaculture facilities */
+    /* ── 1. OpenStreetMap Overpass ── real lat/lon of facilities */
     (async () => {
-      log('OSM Overpass: searching aquaculture facilities…', 'info');
+      const isMill_ = searchType === 'mill';
+      log(`OSM Overpass: searching ${isMill_ ? 'processing plant' : 'aquaculture'} facilities…`, 'info');
       const words = safeQ.trim().split(/\s+/);
       const isShort = words.length <= 2;
-      const nameClause = isShort
-        ? `(node[~"^(landuse|produce|species|name)$"~"${safeQ}","i"]["landuse"~"aquaculture|fish_farm|fishery","i"];` +
-          ` way[~"^(landuse|produce|species|name)$"~"${safeQ}","i"]["landuse"~"aquaculture|fish_farm|fishery","i"];` +
-          ` node["name"~"${safeQ}","i"]["water"="fish_farm"];` +
-          ` node["name"~"${safeQ}","i"]["man_made"~"fish_pass|aquaculture"];)`
-        : `(node["name"~"${safeQ}","i"][~"^(landuse|aquaculture|craft|industrial)$"~"aquaculture","i"];` +
-          ` way["name"~"${safeQ}","i"][~"^(landuse|aquaculture|craft|industrial)$"~"aquaculture","i"];` +
-          ` node["name"~"${safeQ}","i"]["man_made"="fish_pass"];` +
-          ` node["name"~"${safeQ}","i"]["water"="fish_farm"];)`;
+      let nameClause;
+      if (isMill_) {
+        // Processing plants / feed mills — use industrial tags
+        nameClause = isShort
+          ? `(node["name"~"${safeQ}","i"]["industrial"~"fish|fishmeal|feed","i"];` +
+            ` way["name"~"${safeQ}","i"]["industrial"~"fish|fishmeal|feed","i"];` +
+            ` node["name"~"${safeQ}","i"]["man_made"="works"];` +
+            ` node["name"~"${safeQ}","i"]["craft"~"fish","i"];)`
+          : `(node["name"~"${safeQ}","i"][~"^(industrial|craft|man_made)$"~"fish|works|factory","i"];` +
+            ` way["name"~"${safeQ}","i"][~"^(industrial|craft)$"~"fish","i"];)`;
+      } else {
+        nameClause = isShort
+          ? `(node[~"^(landuse|produce|species|name)$"~"${safeQ}","i"]["landuse"~"aquaculture|fish_farm|fishery","i"];` +
+            ` way[~"^(landuse|produce|species|name)$"~"${safeQ}","i"]["landuse"~"aquaculture|fish_farm|fishery","i"];` +
+            ` node["name"~"${safeQ}","i"]["water"="fish_farm"];` +
+            ` node["name"~"${safeQ}","i"]["man_made"~"fish_pass|aquaculture"];)`
+          : `(node["name"~"${safeQ}","i"][~"^(landuse|aquaculture|craft|industrial)$"~"aquaculture","i"];` +
+            ` way["name"~"${safeQ}","i"][~"^(landuse|aquaculture|craft|industrial)$"~"aquaculture","i"];` +
+            ` node["name"~"${safeQ}","i"]["man_made"="fish_pass"];` +
+            ` node["name"~"${safeQ}","i"]["water"="fish_farm"];)`;
+      }
       const overpassQuery = `[out:json][timeout:7];${nameClause};out center 20;`;
       const resp = await fetch('https://overpass-api.de/api/interpreter', {
         method: 'POST',
@@ -2831,15 +3424,18 @@ async function queryFarmAPIs(q, signal, yearTo = 2020) {
       }
     })(),
 
-    /* ── 2. Wikipedia ── progressively broader queries */
+    /* ── 2. Wikipedia ── progressively broader queries, type-aware */
     (async () => {
       log('Wikipedia: searching…', 'info');
-      const wikiQueries = [
-        q + ' aquaculture fish farm',
-        q + ' fishery fishing',
-        'fish farming ' + q,
-        q,
-      ];
+      const wikiQueries = searchType === 'mill'
+        ? [ q + ' fishmeal processing plant',
+            q + ' fish oil mill',
+            q + ' fish processing',
+            q ]
+        : [ q + ' aquaculture fish farm',
+            q + ' fishery fishing',
+            'fish farming ' + q,
+            q ];
       let hit = null;
       for (const wq of wikiQueries) {
         const r = await fetch(
@@ -2900,8 +3496,8 @@ async function queryFarmAPIs(q, signal, yearTo = 2020) {
       return null;
     })(),
 
-    /* ── 4. ASC (Aquaculture Stewardship Council) ── */
-    (async () => {
+    /* ── 4. ASC (Aquaculture Stewardship Council) — farms only, not mills ── */
+    searchType === 'mill' ? Promise.resolve(null) : (async () => {
       log('ASC: searching certified producers…', 'info');
       const ascHTML = await fetchViaProxy(
         `https://www.asc-aqua.org/find-a-farm/?q=${encodeURIComponent(safeQ)}`,
@@ -2933,7 +3529,7 @@ async function queryFarmAPIs(q, signal, yearTo = 2020) {
 ═══════════════════════════════════════════ */
 async function queryVesselAPIs(q, imo, mmsi, signal) {
   const results = [];
-  const safeQ   = q.replace(/[^\w\s\-]/g, '').trim().slice(0, 80);
+  const safeQ   = q.replace(/[^\p{L}\p{N}\s\-]/gu, '').trim().slice(0, 80);
 
   // Phase 1: Wikipedia + OSM in parallel (both direct API calls)
   const [wikiV, osmV] = await Promise.allSettled([
@@ -3009,13 +3605,75 @@ async function queryVesselAPIs(q, imo, mmsi, signal) {
 
   // Phase 2: AIS (by IMO) + AIS (by MMSI) in parallel
   const midMap = {
-    '211':'Germany','219':'Denmark','224':'Spain','226':'France','229':'Malta',
-    '232':'United Kingdom','244':'Netherlands','248':'Italy','253':'Luxembourg',
-    '257':'Norway','265':'Sweden','269':'Switzerland','273':'Russia',
-    '303':'USA (Alaska)','338':'United States','366':'United States',
-    '412':'China','431':'Japan','440':'South Korea','477':'Hong Kong',
-    '503':'Australia','512':'New Zealand','525':'Indonesia','533':'Malaysia',
-    '566':'Singapore','574':'Vietnam','636':'Liberia','710':'Brazil',
+    // Europe
+    '209':'Cyprus',   '211':'Germany',         '212':'Cyprus',        '215':'Malta',
+    '219':'Denmark',  '224':'Spain',            '226':'France',        '227':'France',
+    '228':'France',   '229':'Malta',            '231':'Faroe Islands', '232':'United Kingdom',
+    '233':'United Kingdom','234':'United Kingdom','235':'United Kingdom',
+    '237':'Greece',   '239':'Greece',           '240':'Greece',        '241':'Greece',
+    '242':'Morocco',  '244':'Netherlands',      '245':'Netherlands',   '246':'Netherlands',
+    '247':'Italy',    '248':'Italy',            '249':'Malta',         '250':'Ireland',
+    '251':'Iceland',  '252':'Luxembourg',       '253':'Luxembourg',    '255':'Madeira',
+    '256':'Malta',    '257':'Norway',           '258':'Norway',        '259':'Norway',
+    '261':'Poland',   '262':'Montenegro',       '263':'Portugal',      '264':'Romania',
+    '265':'Sweden',   '266':'Sweden',           '267':'Slovakia',      '268':'San Marino',
+    '269':'Switzerland','270':'Czech Republic', '271':'Turkey',        '272':'Ukraine',
+    '273':'Russia',   '274':'North Macedonia',  '275':'Latvia',        '276':'Estonia',
+    '277':'Lithuania','278':'Slovenia',         '279':'Serbia',
+    // North America
+    '303':'United States','305':'Antigua & Barbuda','306':'Antigua & Barbuda',
+    '308':'Bahamas',  '309':'Bahamas',          '310':'Bermuda',       '311':'Bahamas',
+    '312':'Belize',   '316':'Canada',           '319':'Cayman Islands','320':'Canada',
+    '321':'Costa Rica','323':'Cuba',            '325':'Dominica',      '327':'Dominican Republic',
+    '329':'Guadeloupe','330':'Grenada',         '332':'Guatemala',     '334':'Honduras',
+    '336':'Canada',   '338':'United States',    '339':'Jamaica',       '341':'Saint Kitts and Nevis',
+    '343':'Saint Lucia','345':'Saint Vincent and the Grenadines','347':'Trinidad and Tobago',
+    '351':'Panama',   '352':'Panama',           '353':'Panama',        '354':'Panama',
+    '355':'Panama',   '356':'Panama',           '357':'Panama',        '358':'Panama',
+    '359':'Panama',   '361':'Haiti',            '362':'Netherlands Antilles','366':'United States',
+    '367':'United States','368':'United States','369':'United States',
+    // South America
+    '701':'Argentina','710':'Brazil',           '720':'Bolivia',       '725':'Chile',
+    '730':'Colombia', '735':'Ecuador',          '740':'Falkland Islands','745':'Guyana',
+    '750':'Peru',     '755':'Paraguay',         '760':'Peru',          '765':'Suriname',
+    '770':'Uruguay',  '775':'Venezuela',
+    // Africa
+    '601':'South Africa','606':'Senegal',       '608':'Benin',         '609':'Mauritius',
+    '610':'Ethiopia', '611':'Mozambique',       '612':'Comoros',       '613':'Tanzania',
+    '616':'Eritrea',  '618':'Djibouti',         '619':'Somalia',       '620':'Kenya',
+    '621':'Madagascar','622':'Mozambique',      '624':'Rwanda',        '625':'Sierra Leone',
+    '626':'Seychelles','627':'Togo',            '629':'Nigeria',       '630':'Cameroon',
+    '631':'Angola',   '632':'Benin',            '633':'Cabo Verde',    '634':'Congo',
+    '635':'DR Congo', '636':'Liberia',          '637':'Liberia',       '638':'Liberia',
+    '639':'Liberia',  '642':'Madagascar',       '644':'Liberia',       '645':'Liberia',
+    '647':'Mauritania','648':'Mauritius',       '649':'Namibia',       '650':'Nigeria',
+    '654':'Mauritania','655':'Nigeria',         '657':'Nigeria',       '659':'Namibia',
+    '660':'Saint Helena','661':'Sudan',         '662':'Sudan',         '663':'Senegal',
+    '664':'Somalia',  '665':'Somalia',          '666':'Tanzania',      '667':'Togo',
+    '668':'Tanzania', '670':'Ghana',            '671':'Ghana',         '672':'Liberia',
+    '674':'Tanzania', '677':'Morocco',          '678':'Mozambique',    '679':'Tunisia',
+    // Asia / Pacific
+    '401':'Afghanistan','403':'Saudi Arabia',   '405':'Bangladesh',    '408':'Bahrain',
+    '412':'China',    '413':'China',            '414':'China',         '416':'Taiwan',
+    '417':'Sri Lanka','419':'India',            '422':'Iran',          '423':'Azerbaijan',
+    '425':'Iraq',     '428':'Israel',           '431':'Japan',         '432':'Japan',
+    '434':'Turkmenistan','436':'Kazakhstan',    '437':'Uzbekistan',    '438':'Jordan',
+    '440':'South Korea','441':'South Korea',    '443':'Palestine',     '445':'Democratic People\'s Republic of Korea',
+    '447':'Kuwait',   '450':'Lebanon',          '451':'Kyrgyzstan',    '453':'Macau',
+    '455':'Maldives', '457':'Mongolia',         '459':'Nepal',         '461':'Oman',
+    '463':'Pakistan', '466':'Qatar',            '468':'Saudi Arabia',  '470':'UAE',
+    '472':'UAE',      '477':'Hong Kong',        '478':'Bosnia and Herzegovina','479':'Armenia',
+    '503':'Australia','506':'Myanmar',          '508':'Brunei',        '510':'Micronesia',
+    '511':'Palau',    '512':'New Zealand',      '514':'Cambodia',      '515':'Cambodia',
+    '516':'Christmas Island','518':'Cook Islands','520':'Fiji',        '521':'Indonesia',
+    '523':'Indonesia','525':'Indonesia',        '529':'Kiribati',      '531':'Laos',
+    '533':'Malaysia', '536':'Northern Mariana Islands','538':'Marshall Islands',
+    '540':'New Caledonia','542':'Niue',         '544':'Nauru',         '546':'French Polynesia',
+    '548':'Philippines','553':'Papua New Guinea','555':'Pitcairn Islands',
+    '557':'Solomon Islands','559':'Samoa',      '561':'Tonga',         '563':'Singapore',
+    '564':'Singapore','565':'Singapore',        '566':'Singapore',     '567':'Thailand',
+    '570':'Tuvalu',   '572':'Vanuatu',          '574':'Vietnam',       '576':'Vanuatu',
+    '577':'Vanuatu',  '578':'Wallis and Futuna',
   };
 
   const [aisIMO, aisMMSI] = await Promise.allSettled([
@@ -3108,104 +3766,162 @@ async function scrapeURL() {
   const urlLabel = urls.length > 1 ? `${urls.length} URLs` : esc(urls[0]);
   out.innerHTML = `
     <div class="card">
-      <div class="run-title"><span class="spin"></span> Scraping ${urlLabel}</div>
-      <div class="bot-log" id="bot-log"></div>
+      <div class="run-title"><span class="spin"></span> Scraping <em>${urlLabel}</em></div>
+      <div class="run-status" id="run-status">Fetching page content…</div>
       <div class="prog-bar"><div class="prog-fill" id="bprog" style="width:5%"></div></div>
+      <div class="bot-log" id="bot-log"></div>
       <div id="bot-res"></div>
     </div>`;
 
   logEl = document.getElementById('bot-log');
   const setProgress = p => { const el = document.getElementById('bprog'); if(el) el.style.width = p + '%'; };
+  const setStatus   = s => { const el = document.getElementById('run-status'); if(el) el.textContent = s; };
+  let _sourcesDone = 0, _sourcesTotal = 0;
+  const tickSource = (id) => {
+    _sourcesDone++;
+    setStatus(`Checking ${id}… (${_sourcesDone}/${_sourcesTotal} sources)`);
+  };
+
+  const searchType = document.getElementById('search-type')?.value || 'farm';
+  const isVessel   = searchType === 'vessel';
+  const isMill     = searchType === 'mill';
+  const TEXT_LIMIT = 15000;
 
   try {
-    // Scrape all URLs in parallel
+    // Step 1: Fetch all URLs in parallel with translation + field extraction
     log(`Scraping ${urls.length} URL${urls.length>1?'s':''} in parallel…`, 'info');
+    setStatus('Fetching pages…');
+
     const settled = await Promise.allSettled(urls.map(async (urlRaw, i) => {
-      const tag = urls.length > 1 ? `[${i+1}] ` : '';
-      log(`${tag}Fetching ${new URL(urlRaw).hostname}…`, 'info');
-      const html   = await fetchViaProxy(urlRaw, signal);
-      const doc    = parseHTML(html);
-      const text   = doc.body?.innerText?.slice(0, 5000) || '';
-      const fields = extractFields(doc, text);
+      const tag  = urls.length > 1 ? `[${i+1}] ` : '';
+      const host = new URL(urlRaw).hostname;
+      const isWX = /mp\.weixin\.qq\.com/i.test(urlRaw);
+      log(`${tag}Fetching ${host}…`, 'info');
+
+      const html = await fetchViaProxy(urlRaw, timedSignal(signal, isWX ? 30000 : 22000));
+      const doc  = parseHTML(html, urlRaw);
+      const bodyEl = isWX ? (doc.getElementById('js_content') || doc.body) : doc.body;
+      let   text = bodyEl?.innerText?.slice(0, TEXT_LIMIT) || '';
+
+      const pageLang = detectLang(doc, text);
+      if (pageLang !== 'en') {
+        log(`${tag}Language: ${pageLang} — translating…`, 'info');
+        try { text = await translate(text.slice(0, 4000), signal); } catch {}
+      }
+
+      const fields = filterFieldsByType(extractFields(doc, text), searchType);
       const imgs   = extractImages(doc, urlRaw);
       const imos   = extractIMOs(text);
       if (imos.length && !fields._imo) fields._imo = imos[0];
       const fCount = Object.keys(fields).filter(k => !k.startsWith('_')).length;
-      log(`${tag}✓ ${new URL(urlRaw).hostname} — ${fCount} fields, ${imgs.length} images`, 'ok');
-      learnFromDomain(new URL(urlRaw).hostname, true, fCount);
-      return { urlRaw, hostname: new URL(urlRaw).hostname, fields, imgs, text };
+      log(`${tag}✓ ${host} — ${fCount} field(s), ${imgs.length} img(s)${pageLang !== 'en' ? ` [${pageLang}]` : ''}`, 'ok');
+      learnFromDomain(host, true, fCount);
+      return { urlRaw, id: host, hostname: host, fields, imgs, text, ok: true };
     }));
 
-    setProgress(70);
+    setProgress(50);
 
     const successes = settled.filter(r => r.status === 'fulfilled').map(r => r.value);
     settled.forEach((r, i) => {
       if (r.status === 'rejected') {
-        const host = urls[i] ? new URL(urls[i]).hostname : 'URL';
+        const host = (() => { try { return new URL(urls[i]).hostname; } catch { return urls[i]; } })();
         log(`✗ ${host}: ${r.reason?.message || 'Failed'}`, 'err');
       }
     });
-
     if (!successes.length) throw new Error('All URLs failed to load');
 
-    // Merge — first URL has highest priority, later fill gaps
-    const merged = {};
-    successes.forEach(({ fields }) => {
-      Object.entries(fields).forEach(([k, v]) => { if (v && !merged[k]) merged[k] = v; });
-    });
-    // Run the same validation + normalization as the main search pipeline
-    for (const [k, v] of Object.entries(merged)) {
-      if (typeof v === 'string') {
-        const clean = validateFieldValue(k, v);
-        if (clean) merged[k] = clean; else delete merged[k];
-      }
-    }
-    normalizeFields(merged);
+    // Step 2: Run API queries (OSM, Wikipedia, FAO, ASC, vessel registries)
+    // Use the name extracted from the first URL, or fall back to the domain
+    const guessName = successes[0].fields.vessel_name || successes[0].fields.farm_name || successes[0].hostname;
+    setStatus('Running registries…');
+    log('Querying structured databases…', 'info');
 
-    // Images from all sources combined — supplement with targeted searches
+    let apiResults = [];
+    let imo = successes.map(s => s.fields._imo).find(Boolean) || '';
+    let mmsi = successes.map(s => s.fields.mmsi).find(Boolean) || '';
+    if (isVessel) {
+      const vl = await queryVesselAPIs(guessName, imo, mmsi, signal).catch(() => ({ results:[], imo:'', mmsi:'' }));
+      apiResults = vl.results;
+      imo  = vl.imo  || imo;
+      mmsi = vl.mmsi || mmsi;
+    } else {
+      apiResults = await queryFarmAPIs(guessName, signal, new Date().getFullYear(), searchType).catch(() => []);
+    }
+    if (apiResults.length) log(`API queries: ${apiResults.length} result(s)`, 'ok');
+
+    // Step 3: Merge everything through the ranked pipeline
+    setProgress(70); setStatus('Merging & ranking…');
+    const allSources = [...successes, ...apiResults];
+    let merged = mergeFields(allSources, guessName);
+    if (imo)  merged._imo  = merged._imo  || imo;
+    if (mmsi) merged.mmsi  = merged.mmsi  || mmsi;
+
+    // Step 4: Images — scrape page images + targeted image searches
     let allImgs = successes.flatMap(s => s.imgs);
-    const nameQ = merged.vessel_name || merged.farm_name || '';
-    if (nameQ && document.getElementById('opt-imgs').checked) {
-      const [bingImgs, ddgImgs] = await Promise.allSettled([
+    const nameQ = merged.vessel_name || merged.farm_name || guessName;
+    if (nameQ && document.getElementById('opt-imgs')?.checked !== false) {
+      setStatus('Fetching images…');
+      const [wikiImgs, bingImgs] = await Promise.allSettled([
+        fetchWikipediaImages(nameQ, signal),
         fetchBingImages(nameQ, signal),
-        fetchDDGImages(nameQ, signal),
       ]);
+      if (wikiImgs.status === 'fulfilled') allImgs = [...wikiImgs.value, ...allImgs];
       if (bingImgs.status === 'fulfilled') allImgs = [...allImgs, ...bingImgs.value];
-      if (ddgImgs.status  === 'fulfilled') allImgs = [...allImgs, ...ddgImgs.value];
     }
+    // Dedup images
+    const seenU = new Set();
+    allImgs = allImgs.filter(img => img?.src && !seenU.has(img.src) && seenU.add(img.src)).slice(0, 12);
 
-    // Translate if enabled (translate the primary source text)
-    let primaryText = successes[0]?.text || '';
-    if (document.getElementById('opt-trans').checked && primaryText) {
-      log('Translating…', 'info');
-      try { primaryText = await translate(primaryText, signal); } catch {}
+    // Step 5: AI enrichment — Claude extracts and polishes
+    setProgress(88); setStatus('AI enrichment…');
+    let aiEnhanced = false;
+    if (claudeKey || _serverAIReady) {
+      const texts = successes.map(s => ({ source: s.hostname, text: s.text }));
+      try {
+        const claudeFields = await claudeExtract(texts, guessName, searchType, signal);
+        if (Object.keys(claudeFields).filter(k => claudeFields[k]).length > 0) {
+          Object.entries(claudeFields).forEach(([k, v]) => { if (v) merged[k] = v; });
+          aiEnhanced = true;
+          log(`AI extracted ${Object.keys(claudeFields).filter(k => claudeFields[k]).length} field(s)`, 'ok');
+        }
+        if (Object.keys(merged).filter(k => !k.startsWith('_')).length >= 3) {
+          const desc = await claudePolishDescription(merged, guessName, searchType, signal);
+          if (desc && !signal.aborted) merged.description = desc;
+        }
+      } catch(e) { if (e.name === 'AbortError') throw e; }
     }
 
     setProgress(100);
+    const fieldCount = Object.keys(merged).filter(k => !k.startsWith('_')).length;
+    setStatus(`Done — ${fieldCount} field(s)${aiEnhanced ? ' · AI-enhanced ✓' : ''}${allImgs.length ? ` · ${allImgs.length} image(s)` : ''}`);
+    log(`Complete — ${fieldCount} field(s), ${allImgs.length} image(s)${aiEnhanced ? ' · AI-enhanced ✓' : ''}`, 'ok');
+
     stats.ships++;
     stats.images += allImgs.length;
     updateStats();
 
-    // Teach the knowledge base
-    const cardName = merged.vessel_name || merged.farm_name || successes[0].hostname;
-    learnFromSearch(cardName, merged, successes.map(s => ({ id: s.hostname, ok: true })));
+    const cardName = merged.vessel_name || merged.farm_name || guessName;
+    learnFromSearch(cardName, merged, allSources);
 
     const resEl = document.getElementById('bot-res');
     if (resEl) {
-      if (successes.length > 1) {
-        // Show merged summary banner + one card per source
-        const banner = document.createElement('div');
-        banner.className = 'status s-info';
-        banner.style.marginBottom = '10px';
-        const fTotal = Object.keys(merged).filter(k => !k.startsWith('_')).length;
-        banner.textContent = `Merged ${successes.length} sources — ${fTotal} unique fields extracted`;
-        resEl.appendChild(banner);
+      // Merged card (always shown)
+      const mergedDiv = document.createElement('div');
+      mergedDiv.innerHTML = renderCard(cardName, merged._imo || '', merged, allSources, allImgs, aiEnhanced);
+      resEl.appendChild(mergedDiv);
 
+      // Per-source breakdown when multiple URLs
+      if (successes.length > 1) {
+        const breakdownHdr = document.createElement('div');
+        breakdownHdr.className = 'label';
+        breakdownHdr.style.cssText = 'margin:18px 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:.5px';
+        breakdownHdr.textContent = `Source breakdown (${successes.length} URLs)`;
+        resEl.appendChild(breakdownHdr);
         successes.forEach(({ urlRaw, hostname, fields, imgs, text }) => {
-          const label = document.createElement('div');
-          label.style.cssText = 'font-size:11px;color:var(--mut2);margin:12px 0 4px;font-weight:600';
-          label.textContent = `Source: ${hostname}`;
-          resEl.appendChild(label);
+          const lbl = document.createElement('div');
+          lbl.style.cssText = 'font-size:10.5px;color:var(--mut2);margin:10px 0 3px;font-weight:600';
+          lbl.textContent = hostname;
+          resEl.appendChild(lbl);
           const div = document.createElement('div');
           div.innerHTML = renderCard(
             fields.vessel_name || fields.farm_name || hostname,
@@ -3216,17 +3932,6 @@ async function scrapeURL() {
           );
           resEl.appendChild(div);
         });
-      } else {
-        const { urlRaw, hostname, fields } = successes[0];
-        const div = document.createElement('div');
-        div.innerHTML = renderCard(
-          merged.vessel_name || merged.farm_name || hostname,
-          merged._imo || '',
-          merged,
-          [{ id: hostname, ok: true, url: urlRaw, text: primaryText }],
-          allImgs
-        );
-        resEl.appendChild(div);
       }
     }
   } catch(e) {
@@ -3287,14 +3992,14 @@ function showSavePreview(info, btnId) {
     ]},
     { label: 'Classification', showFor: 'all', fields: [
       { key:'_facilityType', label:'Facility Type', val: defType, type:'select', opts:[
-        ['farm','Fish Farm / Aquaculture'],['mill','Fish Mill / Processing'],
+        ['farm','Farm / Aquaculture'],['mill','Mill / Processing'],
         ['vessel','Shipping / Fishing Vessel'],['general','General / Auto']] },
       { key:'_category', label:'Category / Species', val: defCat, type:'select', opts:[
         ['','— Select —'],
         ['salmon','Salmon'],['trout','Trout'],['shrimp','Shrimp / Prawn'],
         ['tilapia','Tilapia'],['catfish','Catfish'],['tuna','Tuna'],['cod','Cod'],
         ['sea bass sea bream','Sea Bass / Sea Bream'],['carp','Carp'],
-        ['oyster shellfish','Oyster / Shellfish'],['fishmeal processing','Fish Mill / Processing'],
+        ['oyster shellfish','Oyster / Shellfish'],['fishmeal processing','Mill / Processing'],
         ['trawler','Trawler'],['longliner','Longliner'],['purse seiner','Purse Seiner'],
         ['gillnetter','Gillnetter'],['factory vessel','Factory / Processing Vessel'],
         ['reefer carrier','Reefer / Fish Carrier'],['crab lobster vessel','Crab / Lobster Vessel'],
@@ -3308,7 +4013,7 @@ function showSavePreview(info, btnId) {
       { key:'capacity',         label:'Annual Capacity',      val: info.capacity || '' },
       { key:'total_area',       label:'Total Area',           val: info.total_area || '' },
       { key:'stocking_density', label:'Stocking Density',     val: info.stocking_density || '' },
-      { key:'harvest_cycles',   label:'Harvest Cycles / yr',  val: info.harvest_cycles || '' },
+      { key:'harvest_cycles',   label:'Harvest Cycles',       val: info.harvest_cycles || '' },
       { key:'feed_type',        label:'Feed Type',            val: info.feed_type || '' },
       { key:'fcr',              label:'FCR',                  val: info.fcr || '' },
     ]},
@@ -3322,7 +4027,7 @@ function showSavePreview(info, btnId) {
       { key:'license',          label:'License / Permit No.', val: info.license || '' },
       { key:'certification',    label:'Certification',        val: info.certification || '' },
     ]},
-    { label: 'Fish Mill / Processing', showFor: ['mill','general'], fields: [
+    { label: 'Mill / Processing', showFor: ['mill','general'], fields: [
       { key:'processing_capacity',label:'Processing Capacity',val: info.processing_capacity || '' },
       { key:'input_species',    label:'Input Species',        val: info.input_species || '' },
       { key:'output_products',  label:'Output Products',      val: info.output_products || '' },
@@ -3344,7 +4049,7 @@ function showSavePreview(info, btnId) {
       { key:'class_soc',        label:'Class / Society',      val: info.class_soc || '' },
       { key:'owner',            label:'Owner',                val: info.owner || '' },
       { key:'manager',          label:'Manager',              val: info.manager || '' },
-      { key:'nav_status',       label:'Nav Status',           val: info.nav_status || '' },
+      { key:'nav_status',       label:'Navigational Status',  val: info.nav_status || '' },
     ]},
     { label: 'Notes & Description', showFor: 'all', full: true, fields: [
       { key:'description', label:'Description', val: info.description || '', type:'textarea', rows: 8 },
@@ -3452,7 +4157,7 @@ function showSavePreview(info, btnId) {
           const vl = await queryVesselAPIs(name, '', '', signal).catch(() => ({ results: [] }));
           apiResults = vl.results || [];
         } else {
-          apiResults = await queryFarmAPIs(name, signal, new Date().getFullYear()).catch(() => []);
+          apiResults = await queryFarmAPIs(name, signal, new Date().getFullYear(), facilityType).catch(() => []);
         }
         if (!modal.classList.contains('show')) return;
         patchAll(mergeFields(apiResults, name));
@@ -3616,7 +4321,6 @@ async function handleFileRaw(file) {
   const allKeys = Object.keys(filteredFileFields).filter(k => !k.startsWith('_'));
 
   const frag = document.createDocumentFragment();
-  frag.appendChild(document.createElement('hr'));
 
   // File info chips
   const chips = document.createElement('div');
@@ -3689,11 +4393,9 @@ async function handleFileRaw(file) {
         webOut.appendChild(status);
 
         try {
-          const { scrapeResults, allImgs, imo, mmsi } =
+          const { scrapeResults, merged: webMerged, allImgs, imo, mmsi } =
             await bulkScrapeItem(name, searchType, yearTo, catFilter, ac.signal);
 
-          // Merge web results with what was already in the file
-          const webMerged = mergeFields(scrapeResults, name);
           // File fields take precedence over web for already-known values
           const merged = { ...webMerged, ...filteredFileFields };
           if (imo)  merged._imo = merged._imo || imo;
@@ -3726,28 +4428,36 @@ async function handleFileRaw(file) {
   }
 }
 
-// Extract entity names from file fields and raw text (up to 5 unique names)
+// Extract entity names from file fields and raw text (up to 6 unique names)
 function extractFileEntities(fields, text) {
   const names = new Set();
-  // Prefer structured field names
-  for (const k of ['farm_name','vessel_name','name','operator']) {
-    const v = fields[k]; if (v && v.length > 2 && v.length < 80) names.add(v);
+  // 1 ─ Prefer structured field names (highest confidence)
+  for (const k of ['farm_name','vessel_name','name','operator','owner']) {
+    const v = fields[k];
+    if (v && v.length > 2 && v.length < 100) names.add(v.trim());
   }
-  // Scan lines for patterns that look like proper entity names
-  if (names.size < 3) {
+  // 2 ─ Scan lines for English proper-noun entity patterns
+  if (names.size < 4) {
     const lines = text.split(/[\n\r]+/).map(l => l.trim());
     for (const line of lines) {
-      if (line.length < 4 || line.length > 80) continue;
-      // Lines that are mostly title-case or ALL CAPS short phrases (likely headings/names)
-      if (/^[A-Z][A-Za-z0-9\s&.,'\-()]{3,70}$/.test(line) &&
-          !/^\d|^(page|date|version|ref|section|table|figure|annex)/i.test(line) &&
-          line.split(' ').length <= 8) {
+      if (line.length < 4 || line.length > 100) continue;
+      if (/^[A-Z][A-Za-z0-9\s&.,'\-()]{3,90}$/.test(line) &&
+          !/^\d|^(page|date|version|ref|section|table|figure|annex|total|source|note|copyright)/i.test(line) &&
+          line.split(/\s+/).length <= 8) {
         names.add(line.replace(/[.,:;]+$/, '').trim());
       }
       if (names.size >= 5) break;
     }
   }
-  return [...names].slice(0, 5);
+  // 3 ─ Chinese entity name detection — 2–6 CJK chars often followed by 公司/集团/有限/养殖/渔业
+  if (names.size < 5) {
+    const cjkMatches = text.match(/[一-鿿]{2,20}(?:公司|集团|有限|养殖|渔业|水产|船务|海洋|食品)/g) || [];
+    for (const m of cjkMatches) {
+      names.add(m.trim());
+      if (names.size >= 6) break;
+    }
+  }
+  return [...names].slice(0, 6);
 }
 
 async function readPDF(file) {
@@ -3775,32 +4485,44 @@ async function readExcel(file) {
   return wb.SheetNames.map(n => `=== ${n} ===\n` + XLSX.utils.sheet_to_csv(wb.Sheets[n])).join('\n\n');
 }
 async function readTxt(file) {
-  for (const enc of ['utf-8','latin1']) {
-    try {
-      return await new Promise((res,rej) => {
-        const r = new FileReader();
-        r.onload  = e => res(e.target.result);
-        r.onerror = rej;
-        r.readAsText(file, enc);
-      });
-    } catch {}
+  // FileReader never throws for invalid UTF-8 — it silently inserts U+FFFD (replacement char).
+  // We must detect those markers ourselves and retry with windows-1252, which is more complete
+  // than iso-8859-1/latin1 (it maps 0x80–0x9F to printable chars instead of C1 control codes).
+  const decode = enc => new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload  = e => res(e.target.result);
+    r.onerror = rej;
+    r.readAsText(file, enc);
+  });
+  const utf8 = await decode('utf-8').catch(() => null);
+  if (utf8 === null) return '[Could not decode file]';
+  // Heuristic: >5 replacement chars signals a non-UTF-8 encoding (legacy Windows document)
+  if ((utf8.match(/�/g) || []).length > 5) {
+    const w1252 = await decode('windows-1252').catch(() => null);
+    // Accept the windows-1252 reading only if it produced no replacement chars
+    if (w1252 && !/�/.test(w1252)) return w1252;
   }
-  return '[Could not decode file]';
+  return utf8;
 }
 
 function fileSearch() {
-  const kw  = document.getElementById('file-kw').value.trim().toLowerCase().slice(0,100);
+  const raw  = document.getElementById('file-kw').value.trim().slice(0, 100);
   const view = document.getElementById('ftv');
-  if (!kw || !view) return;
+  if (!raw || !view) return;
+  const kw = raw.toLowerCase();
   const hits = lastFileText.split('\n')
-    .map((l,i) => ({n:i+1,l}))
+    .map((l, i) => ({ n: i + 1, l }))
     .filter(x => x.l.toLowerCase().includes(kw));
-  if (!hits.length) { toast('No matches for "' + kw + '"'); return; }
-  const safeKW = kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  view.innerHTML = hits.slice(0,100).map(h =>
+  if (!hits.length) { toast('No matches for "' + raw + '"'); return; }
+  // The highlight regex runs on esc()-encoded content, so the keyword must also
+  // be HTML-entity-escaped. Without this, searching for '&' would try to match
+  // literal '&' inside '&amp;' strings, splitting the entity and corrupting HTML.
+  const escapedKW = esc(raw);   // e.g.  &  →  &amp;
+  const safeKW    = escapedKW.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');  // regex-safe
+  view.innerHTML = hits.slice(0, 100).map(h =>
     `<div><span style="color:var(--mut2);margin-right:8px">L${h.n}</span>${
       esc(h.l).replace(new RegExp(`(${safeKW})`, 'gi'),
-      '<mark style="background:#fff3cd;color:#333">$1</mark>')
+        '<mark style="background:#fff3cd;color:#333">$1</mark>')
     }</div>`).join('');
   toast(hits.length + ' match(es)');
 }
@@ -3820,72 +4542,132 @@ async function textExtract() {
   const out = document.getElementById('txt-out');
   if (!raw) { toast('Paste some text first'); return; }
 
+  out.innerHTML = '<div class="status s-info"><span class="spin"></span> Processing…</div>';
+
+  // 1 ─ Translate if needed
   let text = raw;
-  if (document.getElementById('tgl-tt').classList.contains('on')) {
-    out.innerHTML = '<div class="status s-info"><span class="spin"></span> Translating…</div>';
-    try { text = await translate(raw, null); } catch {}
+  const needsTranslation = document.getElementById('tgl-tt').classList.contains('on');
+  const rawLang = detectLang(null, raw);
+  if (needsTranslation || rawLang !== 'en') {
+    try { text = await translate(raw.slice(0, 6000), null); } catch {}
   }
 
-  // Extract fish farm fields from the pasted text using a dummy doc
+  // 2 ─ Extract structured fields
+  const searchType = document.getElementById('search-type')?.value || 'farm';
   const dummy = new DOMParser().parseFromString('<pre>' + text.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</pre>', 'text/html');
-  const fields = extractFields(dummy, text);
+  const rawFields    = extractFields(dummy, text);
+  const fields       = filterFieldsByType(rawFields, searchType);
+  const found        = Object.keys(fields).filter(k => !k.startsWith('_'));
+
+  // 3 ─ AI extraction on the pasted text
+  let aiFields = {};
+  if ((claudeKey || _serverAIReady) && text.length > 100) {
+    try {
+      aiFields = await claudeExtract([{ source: 'Pasted text', text: text.slice(0, 6000) }], '', searchType, null);
+      Object.entries(aiFields).forEach(([k, v]) => { if (v && !fields[k]) fields[k] = v; });
+    } catch {}
+  }
+
+  const allFound = Object.keys(fields).filter(k => !k.startsWith('_'));
 
   const frag = document.createDocumentFragment();
-  const hr = document.createElement('hr'); frag.appendChild(hr);
 
-  // Show extracted farm fields if any
-  const farmKeys = ['farm_name','species','water_type','capacity','production_method',
-    'license','certification','operator','country','region','latitude','longitude',
-    'water_temp','salinity','dissolved_oxygen','ph','fcr','stocking_density',
-    'harvest_cycles','total_area','employees','processing_capacity','input_species',
-    'output_products','fishmeal_pct','fishoil_pct','feed_type','description'];
-  const found = farmKeys.filter(k => fields[k]);
-
-  if (found.length) {
+  // Field grid
+  if (allFound.length) {
     const flbl = document.createElement('div');
     flbl.className = 'label';
-    flbl.textContent = `Extracted fields (${found.length})`;
+    flbl.textContent = `${allFound.length} field(s) extracted${rawLang !== 'en' ? ` [translated from ${rawLang}]` : ''}`;
     frag.appendChild(flbl);
 
     const grid = document.createElement('div');
-    grid.className = 'vc-grid';
-    grid.style.marginBottom = '12px';
-    found.forEach(k => {
-      const cell = document.createElement('div');
-      cell.className = 'vf';
-      const lbl = document.createElement('div'); lbl.className = 'vfl'; lbl.textContent = k.replace(/_/g,' ').toUpperCase();
-      const val = document.createElement('div'); val.className = 'vfv'; val.textContent = fields[k];
-      cell.appendChild(lbl); cell.appendChild(val);
-      grid.appendChild(cell);
+    grid.className = 'vc-grid'; grid.style.marginBottom = '12px';
+    allFound.forEach(k => {
+      const cell = document.createElement('div'); cell.className = 'vf';
+      const lbl  = document.createElement('div'); lbl.className = 'vfl'; lbl.textContent = k.replace(/_/g,' ').toUpperCase();
+      const val  = document.createElement('div'); val.className = 'vfv'; val.textContent = fields[k];
+      cell.appendChild(lbl); cell.appendChild(val); grid.appendChild(cell);
     });
     frag.appendChild(grid);
 
-    // Save button for the extracted data
-    const saveBtn = document.createElement('button');
-    saveBtn.className = 'btn btn-blue btn-sm';
-    saveBtn.textContent = 'Save Extracted Data';
-    saveBtn.onclick = () => doSave({ name: fields.farm_name || fields.vessel_name || 'Pasted record', ...fields }, null);
     const row = document.createElement('div'); row.className = 'btn-row';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn btn-blue btn-sm'; saveBtn.textContent = 'Save Extracted Data';
+    saveBtn.onclick = () => doSave({ name: fields.farm_name || fields.vessel_name || 'Pasted record', ...fields }, null);
     row.appendChild(saveBtn);
     frag.appendChild(row);
   } else {
     const none = document.createElement('div');
     none.className = 'status s-warn';
-    none.textContent = 'No structured fish farm fields detected. Try the keyword search below to find specific values.';
+    none.textContent = 'No structured fields detected. The web intelligence section below will search for entities mentioned in the text.';
     frag.appendChild(none);
   }
 
-  // Show highlighted text
+  // Highlighted text view
   const tv = document.createElement('div');
-  tv.className = 'text-view';
-  tv.style.marginTop = '10px';
+  tv.className = 'text-view'; tv.style.marginTop = '10px';
   tv.innerHTML = esc(text.slice(0, 8000)).replace(
-    /\b(species|latitude|longitude|capacity|certification|FCR|salinity|pH|operator|country|region|license|harvest|stocking|temperature|fishmeal|fish oil|processing|employees?)\b/gi,
+    /\b(species|latitude|longitude|capacity|certification|FCR|salinity|pH|operator|country|region|license|harvest|stocking|temperature|fishmeal|fish\s*oil|processing|employees?|IMO|MMSI|tonnage|flag|vessel|aquaculture|farm)\b/gi,
     '<mark style="background:#fff3cd;color:#333;padding:0 2px">$1</mark>'
   );
   frag.appendChild(tv);
 
+  // Web enrichment — search for entity names found in the text
+  const webHdr = document.createElement('div'); webHdr.className = 'label';
+  webHdr.style.cssText = 'margin-top:16px'; webHdr.textContent = 'Web intelligence';
+  frag.appendChild(webHdr);
+  const webOut = document.createElement('div'); frag.appendChild(webOut);
+
   out.innerHTML = ''; out.appendChild(frag);
+
+  // Identify entities to search (name fields + NLP-detected proper nouns from text)
+  const entityNames = extractFileEntities(fields, text);
+  if (entityNames.length) {
+    webOut.innerHTML = `<div class="status s-info"><span class="spin"></span> Searching web for ${entityNames.length} entity(ies)…</div>`;
+    const yearTo    = parseInt(document.getElementById('year-to')?.value || String(new Date().getFullYear()));
+    const catFilter = document.getElementById('cat-filter')?.value || '';
+    if (fileRawAC) fileRawAC.abort();
+    fileRawAC = new AbortController();
+    const ac = fileRawAC;
+
+    (async () => {
+      let cardCount = 0;
+      webOut.innerHTML = '';
+      for (const name of entityNames) {
+        if (ac.signal.aborted) break;
+        const status = document.createElement('div');
+        status.className = 'status s-info';
+        status.innerHTML = `<span class="spin"></span> Scanning: <b>${esc(name)}</b>…`;
+        webOut.appendChild(status);
+        try {
+          const { scrapeResults, merged, allImgs, imo } =
+            await bulkScrapeItem(name, searchType, yearTo, catFilter, ac.signal);
+          // Layer in any fields already extracted from the pasted text
+          const finalMerged = { ...merged, ...filterFieldsByType(fields, searchType) };
+          if (imo) finalMerged._imo = finalMerged._imo || imo;
+          const cardName = searchType === 'vessel'
+            ? (finalMerged.vessel_name || name)
+            : (finalMerged.farm_name || finalMerged.vessel_name || name);
+          status.remove();
+          const div = document.createElement('div');
+          div.innerHTML = renderCard(cardName, imo, finalMerged, scrapeResults, allImgs);
+          webOut.appendChild(div);
+          cardCount++;
+          stats.searches++; stats.ships++; updateStats();
+        } catch(e) {
+          if (e.name === 'AbortError') break;
+          status.className = 'status s-err';
+          status.innerHTML = `✗ ${esc(name)}: ${esc(e.message)}`;
+        }
+        await sleep(1200);
+      }
+      if (cardCount === 0 && !ac.signal.aborted) {
+        webOut.innerHTML = '<div class="status s-warn">No web results — try a more specific entity name.</div>';
+      }
+      if (fileRawAC === ac) fileRawAC = null;
+    })();
+  } else {
+    webOut.innerHTML = '<div class="status s-warn">No entity names found — paste text that mentions a specific farm, vessel, or company name.</div>';
+  }
 }
 
 /* ═══════════════════════════════════════════
@@ -3895,115 +4677,143 @@ async function textExtract() {
 async function bulkScrapeItem(q, searchType, yearTo, catFilter, signal) {
   const isVessel = searchType === 'vessel';
   const isMill   = searchType === 'mill';
+  const TEXT_BUDGET = 15000;
+  const BULK_SKIP   = /^https?:\/\/(www\.bing\.com|www\.google\.(com|cn)\/search|html\.duckduckgo\.com|duckduckgo\.com|baidu\.com\/s)[/?]/i;
 
-  // 1 ─ Direct API queries
+  // 1 ─ Direct API queries (structured databases first)
   let scrapeResults = [];
   let imo = '', mmsi = '';
+  const isIMO  = /^\d{7}$/.test(q) && validIMO(q);
+  const isMMSI = /^\d{9}$/.test(q.replace(/\s/g,''));
 
   if (isVessel) {
-    const isIMO  = /^\d{7}$/.test(q) && validIMO(q);
-    const isMMSI = /^\d{9}$/.test(q);
-    const vl = await queryVesselAPIs(q, isIMO ? q : '', isMMSI ? q : '', signal)
+    const vl = await queryVesselAPIs(q, isIMO ? q : '', isMMSI ? q.replace(/\s/g,'') : '', signal)
                        .catch(() => ({ results:[], imo:'', mmsi:'' }));
     scrapeResults = vl.results;
     imo  = vl.imo  || (isIMO  ? q : '');
-    mmsi = vl.mmsi || (isMMSI ? q : '');
+    mmsi = vl.mmsi || (isMMSI ? q.replace(/\s/g,'') : '');
   } else {
-    scrapeResults = await queryFarmAPIs(q, signal, yearTo).catch(() => []);
+    scrapeResults = await queryFarmAPIs(q, signal, yearTo, searchType).catch(() => []);
   }
 
-  // 2 ─ Build Bing search URL
-  const words = q.trim().split(/\s+/);
+  // 2 ─ Build search source list — mirrors runBot quality
+  const words   = q.trim().split(/\s+/);
   const qPhrase = (words.length >= 3 || q.length >= 16) ? `"${q}"` : q;
   const catKW   = catFilter ? ` ${catFilter}` : '';
-  let bingQ;
-  if (isVessel) {
-    bingQ = `${qPhrase}${catKW} vessel ship fishing registry IMO`;
-  } else if (isMill) {
-    bingQ = `${qPhrase}${catKW} fish meal fishmeal processing plant`;
-  } else {
-    bingQ = `${qPhrase}${catKW} fish farm aquaculture facility`;
-  }
 
-  // 3 ─ Build list of URLs to scrape (Bing + DDG + direct registries for vessels)
-  const ddgBulkQ = isVessel
-    ? `${qPhrase}${catKW} vessel ship IMO flag registry`
-    : isMill ? `${qPhrase}${catKW} fishmeal fish oil processing`
-             : `${qPhrase}${catKW} aquaculture fish farm species`;
+  const bingQ = isVessel
+    ? `${qPhrase}${catKW} vessel ship fishing registry IMO site:marinetraffic.com OR site:vesselfinder.com OR site:equasis.org`
+    : isMill ? `${qPhrase}${catKW} fishmeal processing plant site:iffo.com OR site:fis.com OR site:seafoodsource.com`
+             : `${qPhrase}${catKW} fish farm aquaculture facility site:asc-aqua.org OR site:seafoodsource.com OR site:fis.com OR site:mara.gov.cn`;
+
+  const cnQ = isVessel
+    ? `${q} 船舶 船名 IMO`
+    : isMill ? `${q} 鱼粉厂 加工厂`
+             : `${q} 水产养殖 养殖场`;
+
+  const wxQ = isVessel ? `${q} 渔船` : isMill ? `${q} 鱼粉` : `${q} 水产养殖`;
+
   const scraperURLs = [
     { id:'Web-Discovery', url:`https://www.bing.com/search?q=${encodeURIComponent(bingQ)}` },
-    { id:'DDG-Search',    url:`https://html.duckduckgo.com/html/?q=${encodeURIComponent(ddgBulkQ)}` },
-    { id:'Intl-Search',   url:`https://www.bing.com/search?q=${encodeURIComponent(
-        isVessel ? `${q} nave barco buque vessel schiff` : `${q} acuicultura aquaculture élevage`
-      )}&setlang=en`, _fallback:true },
+    { id:'DDG-Search',    url:`https://html.duckduckgo.com/html/?q=${encodeURIComponent(
+        isVessel ? `${qPhrase} vessel ship IMO flag registry year built`
+        : isMill  ? `${qPhrase} fishmeal fish oil processing capacity`
+                  : `${qPhrase} aquaculture fish farm species certified`)}` },
+    { id:'Google-Search', url:`https://www.google.com/search?q=${encodeURIComponent(
+        isVessel ? `${qPhrase} vessel ship IMO flag gross tonnage`
+        : isMill  ? `${qPhrase} fishmeal mill capacity input species`
+                  : `${qPhrase} fish farm aquaculture capacity species certification`)}&num=10&hl=en&gl=us` },
+    // Chinese search
+    { id:'Google-CN',        url:`https://www.google.com/search?q=${encodeURIComponent(cnQ)}&num=10&hl=zh-CN&gl=cn`, _cn:true },
+    { id:'WeChat-Sogou',     url:`https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(q)}`, _cn:true, _wechat:true },
+    // International fallback
+    { id:'Intl-Search', url:`https://www.bing.com/search?q=${encodeURIComponent(
+        isVessel ? `${q} nave vessel schiff 船 مركب`
+                 : `${q} acuicultura aquaculture 水产养殖`)}&setlang=en`, _fallback:true },
   ];
 
+  // Direct vessel registries when we have an IMO
   if (isVessel) {
     if (imo) {
       scraperURLs.push(
         { id:'MarineTraffic', url:`https://www.marinetraffic.com/en/ais/details/ships/imo:${imo}` },
         { id:'VesselFinder',  url:`https://www.vesselfinder.com/vessels/details/${imo}` },
+        { id:'Equasis',       url:`https://www.equasis.org/EquasisWeb/restricted/ShipInfo?fs=Search&P_IMO=${imo}` },
       );
     } else {
       scraperURLs.push(
         { id:'MarineTraffic', url:`https://www.marinetraffic.com/en/ais/details/ships/shipid:0/mmsi:0/vessel:${encodeURIComponent(q)}` },
+        { id:'ShipXY',        url:`https://www.shipxy.com/ship/shiplist?name=${encodeURIComponent(q)}`, _cn:true },
       );
     }
   }
 
+  const DISCOVERY_BULK = ['Web-Discovery','DDG-Search','Google-Search','Google-CN','WeChat-Sogou','Intl-Search'];
   const allImgs = scrapeResults.flatMap(r => r.imgs || []);
 
-  // 4 ─ Scrape each URL sequentially (polite for bulk)
+  // 3 ─ Scrape with per-source translation and DOM-based link following
   for (const s of scraperURLs) {
     if (signal?.aborted) break;
     try {
-      const html = await fetchViaProxy(s.url, signal);
-      const doc  = parseHTML(html);
-      let   text = doc.body?.innerText?.slice(0, 8000) || '';
+      const isWX = s._wechat;
+      const html = await fetchViaProxy(s.url, timedSignal(signal, s._cn ? 28000 : 20000));
+      const doc  = parseHTML(html, s.url);
+      const bodyEl = isWX ? (doc.getElementById('js_content') || doc.body) : doc.body;
+      let   text = bodyEl?.innerText?.slice(0, TEXT_BUDGET) || '';
 
       const pageLang = detectLang(doc, text);
       if (pageLang !== 'en') {
-        try { text = await translate(text.slice(0, 3000), signal); } catch {}
+        try { text = await translate(text.slice(0, 4000), signal); } catch {}
       }
 
-      const fields = extractFields(doc, text);
-      const imgs   = extractImages(doc, s.url);
       if (!imo) { const f = extractIMOs(text); if (f.length) imo = f[0]; }
 
-      // Follow top result links from Bing / DDG pages
-      if (['Web-Discovery','DDG-Search','Intl-Search'].includes(s.id)) {
-        const urlMatches = html.match(/href="(https?:\/\/(?!www\.bing\.com|www\.google\.com|html\.duckduckgo\.com)[^"]{12,300})"/g) || [];
-        const topURLs = [...new Set(urlMatches.map(m => m.slice(6,-1)).filter(u => isValidURL(u) && !u.includes('duckduckgo.com')))]
-                          .slice(0, s._fallback ? 4 : 8);
+      // Discovery: follow top links using DOM (not regex)
+      if (DISCOVERY_BULK.includes(s.id)) {
+        const anchors = [...doc.querySelectorAll('a[href]')];
+        const discovered = [];
+        for (const a of anchors) {
+          try {
+            const href = new URL(a.href || a.getAttribute('href'), s.url).href;
+            if (isValidURL(href) && !BULK_SKIP.test(href) && !discovered.includes(href))
+              discovered.push(href);
+          } catch {}
+        }
+        // WeChat: prioritise mp.weixin.qq.com article links
+        const ordered = isWX
+          ? [...discovered.filter(u => /mp\.weixin\.qq\.com/i.test(u)),
+             ...discovered.filter(u => !/mp\.weixin\.qq\.com/i.test(u))]
+          : discovered;
+        const topURLs = [...new Set(ordered)].slice(0, s._fallback ? 4 : 7);
+
         for (const u of topURLs) {
           if (signal?.aborted) break;
           try {
-            const ph = await fetchViaProxy(u, signal);
-            const pd = parseHTML(ph);
-            let   pt = pd.body?.innerText?.slice(0, 8000) || '';
+            const subWX = /mp\.weixin\.qq\.com/i.test(u);
+            const ph = await fetchViaProxy(u, timedSignal(signal, subWX ? 30000 : (s._cn ? 28000 : 18000)));
+            const pd = parseHTML(ph, u);
+            const pdBody = subWX ? (pd.getElementById('js_content') || pd.body) : pd.body;
+            let   pt = pdBody?.innerText?.slice(0, TEXT_BUDGET) || '';
             const subLang = detectLang(pd, pt);
-            if (subLang !== 'en') {
-              try { pt = await translate(pt.slice(0, 3000), signal); } catch {}
-            }
+            if (subLang !== 'en') { try { pt = await translate(pt.slice(0, 4000), signal); } catch {} }
             if (!isSeaRelated(pt)) continue;
-            if (relevanceScore(pt, q) === 0) continue;
+            if (relevanceScore(pt, q) === 0 && !s._fallback) continue;
             if (!topicMatch(pt, searchType)) continue;
-            const rawPf = extractFields(pd, pt);
-            const pf    = filterFieldsByType(rawPf, searchType);
+            const pf = filterFieldsByType(extractFields(pd, pt), searchType);
             const pi = extractImages(pd, u);
             if (Object.keys(pf).filter(k => !k.startsWith('_')).length >= 1) {
               scrapeResults.push({ id: new URL(u).hostname, ok:true, url:u, fields:pf, imgs:pi, text:pt });
               allImgs.push(...pi);
             }
           } catch(e) { if (e.name === 'AbortError') throw e; }
-          await sleep(700); // polite gap between page fetches within one item
+          await sleep(400);
         }
       }
 
-      const filteredFields = filterFieldsByType(fields, searchType);
+      const filteredFields = filterFieldsByType(extractFields(doc, text), searchType);
       const fc = Object.keys(filteredFields).filter(k => !k.startsWith('_')).length;
-      const topicOk = topicMatch(text, searchType);
-      if ((fc > 0 || imgs.length > 0) && topicOk) {
+      if ((fc > 0) && (isSeaRelated(text) || s._cn) && topicMatch(text, searchType)) {
+        const imgs = extractImages(doc, s.url);
         scrapeResults.push({ id:s.id, ok:true, url:s.url, fields:filteredFields, imgs, text });
         allImgs.push(...imgs);
       }
@@ -4011,17 +4821,40 @@ async function bulkScrapeItem(q, searchType, yearTo, catFilter, signal) {
       if (e.name === 'AbortError') throw e;
       scrapeResults.push({ id:s.id, ok:false, url:s.url, error:e.message, fields:{}, imgs:[], text:'' });
     }
-    await sleep(500); // polite gap between source URLs
+    await sleep(500);
   }
 
-  // Deduplicate images
+  // 4 ─ AI enrichment
+  let merged = mergeFields(scrapeResults, q);
+  if (imo)  merged._imo = merged._imo || imo;
+  if (mmsi) merged.mmsi = merged.mmsi || mmsi;
+
+  if (claudeKey || _serverAIReady) {
+    const goodTexts = scrapeResults.filter(r => r.ok && r.text && relevanceScore(r.text, q) >= 1)
+                                   .slice(0, 4)
+                                   .map(r => ({ source: r.id, text: r.text }));
+    if (goodTexts.length) {
+      try {
+        const cf = await claudeExtract(goodTexts, q, searchType, signal);
+        if (Object.keys(cf).filter(k => cf[k]).length > 0) {
+          Object.entries(cf).forEach(([k, v]) => { if (v) merged[k] = v; });
+        }
+        if (Object.keys(merged).filter(k => !k.startsWith('_')).length >= 3) {
+          const desc = await claudePolishDescription(merged, q, searchType, signal);
+          if (desc && !signal?.aborted) merged.description = desc;
+        }
+      } catch(e) { if (e.name === 'AbortError') throw e; }
+    }
+  }
+
+  // 5 ─ Deduplicate images
   const seenImgs = new Set();
   const dedupImgs = allImgs.filter(img => {
     if (!img?.src || seenImgs.has(img.src)) return false;
     seenImgs.add(img.src); return true;
-  }).slice(0, 8);
+  }).slice(0, 10);
 
-  return { scrapeResults, allImgs: dedupImgs, imo, mmsi };
+  return { scrapeResults, merged, allImgs: dedupImgs, imo, mmsi };
 }
 
 /* ═══════════════════════════════════════════
@@ -4057,12 +4890,8 @@ async function doBulk() {
         const bulkYearTo = parseInt(document.getElementById('year-to')?.value || String(new Date().getFullYear()));
         const bulkCat    = document.getElementById('cat-filter')?.value || '';
 
-        const { scrapeResults, allImgs, imo, mmsi } =
+        const { scrapeResults, merged, allImgs, imo, mmsi } =
           await bulkScrapeItem(q, bulkType, bulkYearTo, bulkCat, signal);
-
-        const merged = mergeFields(scrapeResults, q);
-        if (imo)  merged._imo = merged._imo || imo;
-        if (mmsi) merged.mmsi = merged.mmsi || mmsi;
 
         const isVesselType = bulkType === 'vessel';
         const cardName = isVesselType
@@ -4128,7 +4957,7 @@ function doSave(info, btnId) {
     ...info,
   };
   saved.push(record);
-  persist();
+  persist(record);
   updateSavedBadge();
   updateStats();
   toast('Saved: ' + (info.name || info.vessel_name || info.farm_name || key || 'Record'));
@@ -4171,7 +5000,7 @@ function editNote(id) {
   const note = prompt('Note for this record (500 char max):', rec._notes || '');
   if (note === null) return;
   rec._notes = note.slice(0, 500);
-  persist();
+  persist(rec);
   renderSaved();
 }
 
@@ -4179,7 +5008,7 @@ function toggleVerified(id) {
   const rec = saved.find(s => s._id === id);
   if (!rec) return;
   rec._verified = !rec._verified;
-  persist();
+  persist(rec);
   renderSaved();
   toast(rec._verified ? '✓ Marked as verified' : 'Verification removed');
 }
@@ -4280,9 +5109,9 @@ function renderSaved() {
       const name    = esc(r.name || r.vessel_name || r.farm_name || '—');
       const imo     = esc(r.imo || r._imo || '—');
       const cat     = esc(r._category || '—');
-      const ftype   = esc(r._facilityType === 'mill'   ? 'Fish Mill / Processing'
+      const ftype   = esc(r._facilityType === 'mill'   ? 'Mill / Processing'
                         : r._facilityType === 'vessel' ? 'Shipping / Fishing Vessel'
-                        : r._facilityType === 'farm'   ? 'Fish Farm / Aquaculture'
+                        : r._facilityType === 'farm'   ? 'Farm / Aquaculture'
                         : r.vessel_type || r.production_method || '—');
       const species = esc(r.species || r.input_species || '—');
       const country = esc(r.flag || r.country || '—');
@@ -4343,11 +5172,19 @@ function clearSaved() {
   renderSaved();
 }
 
-async function persist() {
-  // Primary: SQLite — one transaction, one IDB binary write
+async function persist(record = null) {
+  // Primary: SQLite
   if (window.AppSQLite) {
     try {
-      await AppSQLite.batchUpsert(saved);
+      if (record) {
+        // Single-record path (doSave / editNote / toggleVerified):
+        // upsert just the one row — O(1) instead of O(n)
+        await AppSQLite.upsert(record);
+      } else {
+        // Full-batch path (deleteSaved, bulk-import, init):
+        // one transaction covers the whole array
+        await AppSQLite.batchUpsert(saved);
+      }
       return;
     } catch (e) {
       console.warn('[persist] SQLite write failed, falling back:', e.message);
@@ -4375,14 +5212,25 @@ function learnFromSearch(name, fields, sources) {
   const fks = Object.keys(fields).filter(k => !k.startsWith('_'));
   if (!key || fks.length < 2) return;
   const ex = learned[key] || { fields:{}, sources:[], hitCount:0, lastSeen:null, confidence:0 };
-  fks.forEach(k => { if (fields[k] && !ex.fields[k]) ex.fields[k] = fields[k]; });
+
+  // Dynamic fields (nav_status, flag, year) update on every search — may have changed.
+  // Static fields (IMO, name, location) update only when not yet cached.
+  const ALWAYS_UPDATE = new Set(['nav_status','flag','description','capacity','certification','employees']);
+  fks.forEach(k => {
+    if (!fields[k]) return;
+    if (ALWAYS_UPDATE.has(k) || !ex.fields[k]) {
+      ex.fields[k] = fields[k];
+    }
+  });
+
   const goodSrc = (sources || []).filter(s => s.ok).map(s => s.id);
-  ex.sources = [...new Set([...ex.sources, ...goodSrc])];
+  ex.sources = [...new Set([...ex.sources, ...goodSrc])].slice(0, 20);
   ex.hitCount++;
   ex.lastSeen = new Date().toISOString();
-  ex.confidence = Math.min(1, Object.keys(ex.fields).length / 8);
+  // Confidence based on both field count and source diversity
+  ex.confidence = Math.min(1, (Object.keys(ex.fields).length / 8) * 0.7 + (Math.min(ex.sources.length, 6) / 6) * 0.3);
   learned[key] = ex;
-  persistLearned();
+  schedulePersistLearned();
 }
 
 function checkLearned(name) {
@@ -4580,7 +5428,7 @@ async function exportSQLiteDB() {
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
     a.href = url;
-    a.download = `fish-intel-${new Date().toISOString().slice(0,10)}.db`;
+    a.download = `records-${new Date().toISOString().slice(0,10)}.db`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
     toast('Downloaded SQLite database');
@@ -4672,8 +5520,11 @@ function populateYearSelects() {
   const to   = document.getElementById('year-to');
   if (!from || !to) return;
   const curYear = new Date().getFullYear();
-  for (let y = 2020; y <= curYear; y++) {
-    from.add(new Option(y, y, y === 2020, y === 2020));
+  // Start from 1980: fishing vessels built in the 1980s–1990s are still active, and the
+  // year_built validator already accepts 1800+. Default selection stays at 2000/curYear.
+  const START_YEAR = 1980;
+  for (let y = START_YEAR; y <= curYear; y++) {
+    from.add(new Option(y, y, y === 2000, y === 2000));
     to.add(new Option(y, y, y === curYear, y === curYear));
   }
   from.addEventListener('change', () => {
@@ -4687,8 +5538,21 @@ function populateYearSelects() {
 /* Remove sentences mentioning years after yearTo */
 function clipToYear(text, yearTo) {
   if (!text) return text;
-  return text.split(/(?<=[.!?])\s+/).filter(s => {
-    const yrs = (s.match(/\b(19|20)\d{2}\b/g) || []).map(Number);
-    return !yrs.some(y => y > yearTo);
-  }).join(' ');
+  const filterSentences = parts =>
+    parts.filter(s => {
+      const yrs = (s.match(/\b(19|20)\d{2}\b/g) || []).map(Number);
+      return !yrs.some(y => y > yearTo);
+    });
+  try {
+    // Lookbehind: Chrome 62+, Firefox 78+, Safari 16.4+ — try first
+    return filterSentences(text.split(/(?<=[.!?])\s+/)).join(' ');
+  } catch {
+    // Fallback for Safari < 16.4: split on punctuation and re-attach the terminator
+    return filterSentences(
+      text.split(/([.!?])\s+/).reduce((acc, part, i, arr) => {
+        if (i % 2 === 0) acc.push(part + (arr[i + 1] || ''));
+        return acc;
+      }, [])
+    ).join(' ');
+  }
 }

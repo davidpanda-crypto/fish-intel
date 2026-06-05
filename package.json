@@ -1,5 +1,5 @@
 {
-  "name": "fish-intel",
+  "name": "website-extractor-tools",
   "version": "2.0.0",
   "private": true,
   "scripts": {
@@ -9,15 +9,15 @@
     "sync-public": "cp -r js/* public/js/ && cp -r css/* public/css/ && cp sw.js public/sw.js"
   },
   "dependencies": {
-    "next":            "15.3.3",
-    "react":           "^19.0.0",
-    "react-dom":       "^19.0.0",
-    "better-sqlite3":  "^11.10.0"
+    "next":            "15.3.8",
+    "react":           "^19.2.4",
+    "react-dom":       "^19.2.4",
+    "better-sqlite3":  "^12.10.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13"
   },
   "engines": {
-    "node": ">=18.17.0"
+    "node": ">=20.0.0"
   }
 }

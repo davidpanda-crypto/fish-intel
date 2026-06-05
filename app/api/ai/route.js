@@ -28,9 +28,11 @@ export async function POST(request) {
   const hasQwen   = !!process.env.QWEN_ENDPOINT;
   const hasClaude = !!process.env.ANTHROPIC_API_KEY;
 
-  // Determine which provider to use
+  // Determine which provider to use.
+  // useClaude uses `let` so the Qwen catch block can enable Claude as a fallback
+  // when Qwen is configured but unreachable (the original `const` blocked this).
   const useQwen = (provider === 'qwen' || (provider === 'auto' && hasQwen));
-  const useClaude = !useQwen && (provider === 'claude' || (provider === 'auto' && hasClaude));
+  let useClaude = !useQwen && (provider === 'claude' || (provider === 'auto' && hasClaude));
 
   // ── Qwen32B via OpenAI-compatible endpoint ────────────────────────────────
   if (useQwen && hasQwen) {
@@ -72,7 +74,9 @@ export async function POST(request) {
       if (!hasClaude) {
         return NextResponse.json({ error: `Qwen unreachable: ${e.message}` }, { status: 503 });
       }
-      // fall through
+      // Enable Claude fallback — useClaude was false because useQwen was true,
+      // but now Qwen has failed so we must allow the Claude block to run.
+      useClaude = true;
     }
   }
 

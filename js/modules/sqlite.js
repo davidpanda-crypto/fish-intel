@@ -1,5 +1,5 @@
 /**
- * fish-intel — Browser SQLite layer (sql.js / WebAssembly)
+ * Website Extractor Tools — Browser SQLite layer (sql.js / WebAssembly)
  * PRIMARY database for saved records.
  *
  * Exposed as window.AppSQLite. sql.js WASM is lazy-loaded from CDN on first
@@ -14,7 +14,7 @@
  *   remove(localId)         → bool   — delete entity (cascades to children)
  *   clearAll()              → void   — DELETE all entities
  *   getAllEntities()         → obj[]  — all rows as plain JS objects
- *   rowToRecord(row)        → record — maps DB row → fish-intel record format
+ *   rowToRecord(row)        → record — maps DB row → app record format
  *   addImages(id, imgs[])   → void   — add scraped images
  *   logSearch(q, type, n)   → void   — append to search_history
  *   bulkImport(records[])   → count  — alias for batchUpsert (migration helper)
@@ -26,8 +26,8 @@
 (function () {
   'use strict';
 
-  const SQL_JS_CDN = 'https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/sql-wasm.min.js';
-  const WASM_BASE  = 'https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/';
+  const SQL_JS_CDN = 'https://cdn.jsdelivr.net/npm/sql.js@1.14.1/dist/sql-wasm.min.js';
+  const WASM_BASE  = 'https://cdn.jsdelivr.net/npm/sql.js@1.14.1/dist/';
   const IDB_KEY    = 'sqlite-db';
 
   let _SQL         = null;
@@ -373,7 +373,7 @@
   }
 
   /* ─────────────────────────────────────────────────────────────────
-     PUBLIC: MAP DB ROW → fish-intel record format
+     PUBLIC: MAP DB ROW → app record format
   ───────────────────────────────────────────────────────────────── */
   function rowToRecord(row) {
     return {
@@ -393,8 +393,8 @@
       country:             row.country             || null,
       flag:                row.flag                || null,
       region:              row.region              || null,
-      latitude:            row.latitude            || null,
-      longitude:           row.longitude           || null,
+      latitude:            row.latitude            ?? null,
+      longitude:           row.longitude           ?? null,
       water_type:          row.water_type          || null,
       production_method:   row.production_method   || null,
       capacity:            row.capacity            || null,
@@ -419,7 +419,7 @@
       vessel_type:         row.vessel_type         || null,
       gross_tonnage:       row.gross_tonnage       || null,
       dwt:                 row.dwt                 || null,
-      year_built:          row.year_built          || null,
+      year_built:          row.year_built          ?? null,
       port_of_registry:    row.port_of_registry    || null,
       length:              row.vessel_length       || null,
       beam:                row.beam                || null,

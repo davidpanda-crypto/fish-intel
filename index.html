@@ -5,18 +5,18 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' https: data: blob:; img-src * data: blob:; connect-src *;">
 <meta name="referrer" content="no-referrer">
-<title>Fish Farm Intelligence Bot</title>
+<title>Website Extractor Tools</title>
 
 <!-- DOMPurify: loaded eagerly — used on every scrape to sanitize HTML -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.4.7/purify.min.js"
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
 <!-- App modules: IDB adapter, hash router, TTL cache — load before app.js -->
-<script src="js/modules/idb.js?v=22"></script>
-<script src="js/modules/router.js?v=22"></script>
-<script src="js/modules/cache.js?v=22"></script>
-<script src="js/modules/directus.js?v=22"></script>
-<script src="js/modules/sqlite.js?v=22"></script>
+<script src="js/modules/idb.js?v=23"></script>
+<script src="js/modules/router.js?v=23"></script>
+<script src="js/modules/cache.js?v=23"></script>
+<script src="js/modules/directus.js?v=23"></script>
+<script src="js/modules/sqlite.js?v=23"></script>
 
 <!-- pdf.js · xlsx · mammoth are lazy-loaded on first file upload (see app.js) -->
 
@@ -24,7 +24,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Libre+Franklin:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
 <!-- App styles -->
-<link rel="stylesheet" href="css/style.css?v=22">
+<link rel="stylesheet" href="css/style.css?v=23">
 </head>
 <body>
 
@@ -80,7 +80,7 @@
         <select id="claude-model-sel" class="ctrl-sel" style="width:100%">
           <option value="claude-3-5-haiku-20241022">claude-3-5-haiku — Fast &amp; cheap (Recommended)</option>
           <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet — Balanced accuracy</option>
-          <option value="claude-opus-4-5">claude-opus-4 — Highest accuracy, slower</option>
+          <option value="claude-opus-4-5">claude-opus-4-5 — Highest accuracy, slower</option>
         </select>
         <p class="settings-hint" style="margin-top:6px">Haiku is recommended — it extracts fields accurately at minimal cost (~$0.001 per search).</p>
       </div>
@@ -89,14 +89,12 @@
       <div class="settings-divider"></div>
       <div class="settings-section">
         <label class="settings-label">Directus Integration</label>
-        <p class="settings-hint" style="margin-bottom:10px">Sync saved records to your Directus instance. Credentials are stored locally in IndexedDB only.</p>
-        <label class="settings-label" for="directus-url-input" style="margin-top:4px">Instance URL</label>
-        <input type="url" id="directus-url-input" placeholder="https://your-directus.io" autocomplete="off" spellcheck="false" style="width:100%;margin-bottom:8px">
-        <label class="settings-label" for="directus-token-input">Static Token</label>
+        <p class="settings-hint" style="margin-bottom:10px">Sync saved records to your Directus instance. The instance URL and token are configured via <code>DIRECTUS_URL</code> and <code>DIRECTUS_TOKEN</code> server environment variables — only the collection name is stored locally.</p>
+        <label class="settings-label" for="directus-collection-input" style="margin-top:4px">Collection Name</label>
         <div class="settings-key-row">
-          <input type="password" id="directus-token-input" placeholder="Paste token…" autocomplete="off" spellcheck="false">
+          <input type="text" id="directus-collection-input" placeholder="e.g. fish_farms" autocomplete="off" spellcheck="false">
           <button class="btn btn-blue btn-sm" onclick="saveDirectusSettings()">Connect</button>
-          <button class="btn btn-ghost btn-sm" onclick="clearDirectusSettings()">Clear</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearDirectusSettings()">Disconnect</button>
         </div>
         <div id="directus-status" style="margin-top:10px"></div>
       </div>
@@ -108,8 +106,8 @@
 <header class="site-hdr" role="banner">
   <div class="site-hdr-inner">
     <div class="hdr-brand">
-      <div class="hdr-title">Fish Farm &amp; Ship Intelligence</div>
-      <div class="hdr-sub">Research fish farms, mills &amp; vessels — locations, species, certifications, maritime records, and more</div>
+      <div class="hdr-title">Website Extractor Tools</div>
+      <div class="hdr-sub">Extract and research data from any website — farms, mills, vessels, locations, certifications, and more</div>
     </div>
     <div class="hdr-stats" aria-label="Session statistics">
       <div class="hs"><span class="hs-v" id="s-searches">0</span><div class="hs-l">Searches</div></div>
@@ -150,8 +148,8 @@
         <div class="ctrl-group">
           <span class="ctrl-lbl">Facility Type</span>
           <select id="search-type" class="ctrl-sel" aria-label="Facility type">
-            <option value="farm" selected>Fish Farm / Aquaculture</option>
-            <option value="mill">Fish Mill / Processing Plant</option>
+            <option value="farm" selected>Farm / Aquaculture</option>
+            <option value="mill">Mill / Processing Plant</option>
             <option value="vessel">Shipping / Fishing Vessel</option>
             <option value="general">General / Auto-detect</option>
           </select>
@@ -179,7 +177,7 @@
         <button id="search-btn" class="search-go" onclick="runBot()">Search</button>
         <button class="btn-cancel" id="cancel-btn" onclick="cancelSearch()">✕ Cancel</button>
       </div>
-      <p class="search-tip">Try: <button class="search-sug" onclick="fillSearch('Mowi ASA')">"Mowi ASA"</button> · <button class="search-sug" onclick="fillSearch('Leroy Seafood')">"Leroy Seafood"</button> · <button class="search-sug" onclick="fillSearch('Atlantic Dawn')">"Atlantic Dawn"</button> · or a 7-digit IMO number</p>
+      <p class="search-tip">Try: <button class="search-sug" onclick="fillSearch('Mowi ASA')">"Mowi ASA"</button> · <button class="search-sug" onclick="fillSearch('Lerøy Seafood')">"Lerøy Seafood"</button> · <button class="search-sug" onclick="fillSearch('Atlantic Dawn')">"Atlantic Dawn"</button> · or a 7-digit IMO number</p>
     </div>
 
     <!-- SCRAPE URL mode -->
@@ -287,7 +285,7 @@
     <div class="mode-body" id="mode-bulk" role="tabpanel" aria-labelledby="mbtn-bulk" hidden>
       <div class="upload-hint">One name per line — the bot searches each one and builds a results table you can export to CSV or JSON.</div>
       <textarea id="bulk-in" rows="7" maxlength="10000"
-        placeholder="Mowi ASA&#10;Leroy Seafood&#10;Skretting&#10;Marine Harvest&#10;Cooke Aquaculture"></textarea>
+        placeholder="Mowi ASA&#10;Lerøy Seafood&#10;Skretting&#10;Cermaq&#10;Cooke Aquaculture"></textarea>
       <div class="btn-row">
         <button class="btn btn-blue" onclick="doBulk()">Run Bulk Lookup</button>
         <button class="btn btn-ghost btn-sm" onclick="exportCSV(bulkRes,'bulk.csv')">Export CSV</button>
@@ -392,6 +390,6 @@
 </div><!-- /app -->
 
 <!-- App logic -->
-<script src="js/app.js?v=22"></script>
+<script src="js/app.js?v=23"></script>
 </body>
 </html>

@@ -60,7 +60,7 @@
       if (state.path === 'search' && state.q) {
         const input = document.getElementById('main-search');
         const sel   = document.getElementById('search-type');
-        if (input) input.value = decodeURIComponent(state.q);
+        if (input) input.value = state.q;
         if (sel && state.t) sel.value = state.t;
         // Small delay so the app is fully rendered before auto-running
         setTimeout(() => {
